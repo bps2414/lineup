@@ -2,10 +2,9 @@
 
 ## 1.4.1
 
+1.4.0 was not released; its changes ship here.
+
 - A lifted game stays on top: moving it left no longer draws the game it passes over it.
-
-## 1.4.0
-
 - A new version opens on its own when Lineup starts, with its notes. Not now skips that version.
 - The notes fit the screen and come in Portuguese too.
 - Updating copies the installed version aside before the app closes, so the swap after it is quicker.
