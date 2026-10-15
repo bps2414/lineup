@@ -1,5 +1,7 @@
 # Building Lineup
 
+[Português](pt-BR/COMPILAR.md)
+
 Linux (Ubuntu 24.04 is what CI uses) or WSL. The build downloads pinned, hash-checked dependencies (PS5 payload SDK, etc.) into `ps5-react/.deps`.
 
 ## Prerequisites
