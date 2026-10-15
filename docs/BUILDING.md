@@ -9,7 +9,7 @@ Linux (Ubuntu 24.04 is what CI uses) or WSL. The build downloads pinned, hash-ch
 ```sh
 sudo apt-get install -y build-essential cmake git curl unzip zip xz-utils zstd binutils \
   python3-venv llvm-18 llvm-18-dev clang-18 lld-18 libssl-dev
-sudo apt-get install -y exfatprogs   # only for the .exfat image
+sudo apt-get install -y exfatprogs exfat-fuse   # only for the .exfat image
 ```
 
 Node.js 22 with npm, Python 3.12+. LLVM is expected in `/usr/lib/llvm-18/bin` (override with `LLVM=/path/bin`).

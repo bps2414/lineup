@@ -27,7 +27,10 @@ if [ "$NO_EXFAT" != "--no-exfat" ]; then
   truncate -s "${SIZE_K}K" "$IMG"
   mkfs.exfat -c 64K -L LINEUP "$IMG" >/dev/null
   MNT="$(mktemp -d)"
-  sudo mount -o loop,uid="$(id -u)",gid="$(id -g)" "$IMG" "$MNT"
+  # The kernel driver when there is one, else FUSE (GitHub's runner kernels lack the exfat module).
+  sudo modprobe exfat 2>/dev/null || true
+  if grep -qw exfat /proc/filesystems; then sudo mount -o loop,uid="$(id -u)",gid="$(id -g)" "$IMG" "$MNT"
+  else sudo mount.exfat-fuse -o uid="$(id -u)",gid="$(id -g)" "$IMG" "$MNT"; fi
   cp -r "$SRC"/. "$MNT"/
   sync
   sudo umount "$MNT"; rmdir "$MNT"

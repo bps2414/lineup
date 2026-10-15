@@ -10,7 +10,7 @@ payloads do PS5 etc.) em `ps5-react/.deps`.
 ```sh
 sudo apt-get install -y build-essential cmake git curl unzip zip xz-utils zstd binutils \
   python3-venv llvm-18 llvm-18-dev clang-18 lld-18 libssl-dev
-sudo apt-get install -y exfatprogs   # só para a imagem .exfat
+sudo apt-get install -y exfatprogs exfat-fuse   # só para a imagem .exfat
 ```
 
 Node.js 22 com npm e Python 3.12 ou mais novo. O LLVM é procurado em `/usr/lib/llvm-18/bin`; para usar
