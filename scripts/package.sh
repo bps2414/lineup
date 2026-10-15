@@ -30,10 +30,10 @@ if [ "$NO_EXFAT" != "--no-exfat" ]; then
   # The kernel driver when there is one, else FUSE (GitHub's runner kernels lack the exfat module).
   sudo modprobe exfat 2>/dev/null || true
   if grep -qw exfat /proc/filesystems; then sudo mount -o loop,uid="$(id -u)",gid="$(id -g)" "$IMG" "$MNT"
-  else sudo mount.exfat-fuse -o uid="$(id -u)",gid="$(id -g)" "$IMG" "$MNT"; fi
+  else LOOP="$(sudo losetup -f --show "$IMG")"; sudo mount.exfat-fuse -o uid="$(id -u)",gid="$(id -g)" "$LOOP" "$MNT"; fi
   cp -r "$SRC"/. "$MNT"/
   sync
-  sudo umount "$MNT"; rmdir "$MNT"
+  sudo umount "$MNT"; rmdir "$MNT"; [ -z "${LOOP:-}" ] || sudo losetup -d "$LOOP"
 fi
 
 (cd "$DIST" && sha256sum -- * > SHA256SUMS.tmp && mv SHA256SUMS.tmp SHA256SUMS)
