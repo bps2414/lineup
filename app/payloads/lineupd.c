@@ -15,6 +15,12 @@
 //                                in the new order, with the index the client read
 //   POST /quit                   X-Lineup: 1; exits after answering
 //
+// Built with -DLINEUPD_DIAG (port 9078, LAN), also:
+//   GET    /diag                 avatars, homes, mounts, install candidates, SQLite version and strings
+//   POST   /diag/trace?user=<10 dig>  X-Lineup: 1; backup, then log-only triggers on tbl_iconinfo_<user>
+//   GET    /diag/trace           the trace rows and the triggers in place
+//   DELETE /diag/trace           X-Lineup: 1; drops every lineup_trace trigger and the table
+//
 // Built with -DLINEUPD_TEST it compiles on a desktop and runs a self-check against a copy of app.db,
 // or a synthetic database without arguments.
 #include <ctype.h>
@@ -33,6 +39,10 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include "sqlite3.h"
+#ifdef LINEUPD_DIAG
+#include <sys/param.h>
+#include <sys/mount.h>
+#endif
 
 #ifdef LINEUPD_TEST
 #include <assert.h>
@@ -43,7 +53,14 @@
 #endif
 
 #define LINEUPD_VERSION "1.1.0"
+#ifdef LINEUPD_DIAG
+// Phase 0 diagnostic build (docs/pt-BR/PLANO-1.2.md): its own port, open to the LAN, so it runs beside the
+// app's lineupd and still answers when the home screen does not.
+#define PORT 9078
+#define LINEUPD_LAN
+#else
 #define PORT 9077
+#endif
 #define MAX_HEADER (16 * 1024)
 #define MAX_BODY (64 * 1024)
 #define MAX_GAMES 512
@@ -258,32 +275,36 @@ static void make_dirs(const char* path) {
   mkdir(partial, 0777);
 }
 
+// Checks the database and copies it to a new file in backup_dir. Returns 0, or -1 with `message` set.
+static int check_and_backup(sqlite3* db, char* backup, size_t backup_size, char* message, size_t message_size) {
+  char check[128];
+  if (pragma_text(db, "PRAGMA quick_check", check, sizeof check)) {
+    snprintf(message, message_size, "The home screen database failed its check (%s). Nothing was saved.", check);
+    return -1;
+  }
+  make_dirs(backup_dir);
+  snprintf(backup, backup_size, "%s/app-%010lld.db", backup_dir, (long long)time(NULL));
+  unlink(backup);
+  char sql[600];
+  snprintf(sql, sizeof sql, "VACUUM INTO '%s'", backup);
+  if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
+    snprintf(message, message_size, "The backup failed (%s). Nothing was saved.", sqlite3_errmsg(db));
+    return -1;
+  }
+  rotate_backups();
+  return 0;
+}
+
 // Saves `posted` as the new order. Returns the HTTP status; `message` explains a failure.
 static int save_order(const char* user, const Row* posted, int posted_count, char* backup, size_t backup_size,
                       char* integrity, size_t integrity_size, char* message, size_t message_size) {
   sqlite3* db = open_db(1);
   if (!db) { snprintf(message, message_size, "Could not open the home screen database."); return 500; }
   int status = 500;
-  char check[128];
   static Row current[MAX_GAMES];
   static long long indices[MAX_GAMES];
   if (!table_exists(db, user)) { snprintf(message, message_size, "No such profile."); status = 404; goto done; }
-  if (pragma_text(db, "PRAGMA quick_check", check, sizeof check)) {
-    snprintf(message, message_size, "The home screen database failed its check (%s). Nothing was saved.", check);
-    goto done;
-  }
-  make_dirs(backup_dir);
-  snprintf(backup, backup_size, "%s/app-%010lld.db", backup_dir, (long long)time(NULL));
-  unlink(backup);
-  {
-    char sql[600];
-    snprintf(sql, sizeof sql, "VACUUM INTO '%s'", backup);
-    if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
-      snprintf(message, message_size, "The backup failed (%s). Nothing was saved.", sqlite3_errmsg(db));
-      goto done;
-    }
-  }
-  rotate_backups();
+  if (check_and_backup(db, backup, backup_size, message, message_size)) goto done;
   if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
     snprintf(message, message_size, "The database is busy (%s). Try again.", sqlite3_errmsg(db));
     goto done;
@@ -492,6 +513,293 @@ static const char* query_value(const char* query, const char* name, char* out, s
   return NULL;
 }
 
+#ifdef LINEUPD_DIAG
+
+// ---- Phase 0 diagnostics ----
+
+static void diag_error(Buffer* b, const char* message) {
+  puts_(b, "{\"error\":");
+  put_json_string(b, message);
+  puts_(b, "}");
+}
+
+// A directory as [{"name","size","mtime","dir"}], `depth` levels deep, at most 200 entries a level.
+static void diag_list(Buffer* b, const char* path, int depth) {
+  DIR* dir = opendir(path);
+  if (!dir) { diag_error(b, strerror(errno)); return; }
+  puts_(b, "[");
+  int count = 0;
+  for (struct dirent* entry; (entry = readdir(dir)) && count < 200;) {
+    if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+    char child[512];
+    struct stat info;
+    snprintf(child, sizeof child, "%s/%s", path, entry->d_name);
+    int ok = !stat(child, &info);
+    puts_(b, count++ ? ",{\"name\":" : "{\"name\":");
+    put_json_string(b, entry->d_name);
+    if (ok) putf(b, ",\"size\":%lld,\"mtime\":%lld", (long long)info.st_size, (long long)info.st_mtime);
+    if (ok && S_ISDIR(info.st_mode)) {
+      puts_(b, ",\"dir\":");
+      if (depth > 1) diag_list(b, child, depth - 1); else puts_(b, "true");
+    }
+    puts_(b, "}");
+  }
+  closedir(dir);
+  puts_(b, "]");
+}
+
+// Each result row as an object keyed by column name.
+static void diag_query(Buffer* b, sqlite3* db, const char* sql) {
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) { diag_error(b, sqlite3_errmsg(db)); return; }
+  puts_(b, "[");
+  for (int row = 0; sqlite3_step(statement) == SQLITE_ROW; ++row) {
+    puts_(b, row ? ",{" : "{");
+    for (int column = 0; column < sqlite3_column_count(statement); ++column) {
+      if (column) puts_(b, ",");
+      put_json_string(b, sqlite3_column_name(statement, column));
+      puts_(b, ":");
+      int type = sqlite3_column_type(statement, column);
+      if (type == SQLITE_INTEGER) putf(b, "%lld", (long long)sqlite3_column_int64(statement, column));
+      else if (type == SQLITE_NULL) puts_(b, "null");
+      else put_json_string(b, (const char*)sqlite3_column_text(statement, column));
+    }
+    puts_(b, "}");
+  }
+  sqlite3_finalize(statement);
+  puts_(b, "]");
+}
+
+// Lineup sources ShadowMountPlus could pick up under `root`: a PPSA99077 folder or a Lineup-*.exfat image.
+static void diag_candidates(Buffer* b, const char* root, int* first) {
+  DIR* dir = opendir(root);
+  if (!dir) return;
+  for (struct dirent* entry; (entry = readdir(dir));) {
+    size_t length = strlen(entry->d_name);
+    if (strcmp(entry->d_name, "PPSA99077") &&
+        (strncmp(entry->d_name, "Lineup-", 7) || length < 6 || strcmp(entry->d_name + length - 6, ".exfat"))) continue;
+    char path[512];
+    struct stat info;
+    snprintf(path, sizeof path, "%s/%s", root, entry->d_name);
+    puts_(b, *first ? "{\"path\":" : ",{\"path\":");
+    *first = 0;
+    put_json_string(b, path);
+    if (!stat(path, &info)) putf(b, ",\"size\":%lld,\"mtime\":%lld,\"dir\":%s", (long long)info.st_size,
+                                 (long long)info.st_mtime, S_ISDIR(info.st_mode) ? "true" : "false");
+    puts_(b, "}");
+  }
+  closedir(dir);
+}
+
+// Strings in a system SQLite module that tell its version and build options; empty when it is encrypted.
+static void diag_sqlite_module(Buffer* b, const char* path) {
+  int file = open(path, O_RDONLY);
+  struct stat info;
+  if (file < 0 || fstat(file, &info) || info.st_size <= 0 || info.st_size > 32 * 1024 * 1024) {
+    if (file >= 0) close(file);
+    diag_error(b, file < 0 ? strerror(errno) : "unexpected size");
+    return;
+  }
+  unsigned char* data = malloc((size_t)info.st_size);
+  ssize_t size = data ? read(file, data, (size_t)info.st_size) : -1;
+  close(file);
+  if (size < 4) { free(data); diag_error(b, "read failed"); return; }
+  putf(b, "{\"size\":%lld,\"magic\":\"%02x%02x%02x%02x\",\"strings\":[", (long long)size, data[0], data[1], data[2], data[3]);
+  int found = 0;
+  for (ssize_t start = 0, i = 0; i <= size && found < 150; ++i) {
+    if (i < size && data[i] >= 0x20 && data[i] < 0x7f) continue;
+    ssize_t length = i - start;
+    char text[128];
+    if (length >= 4 && length < (ssize_t)sizeof text) {
+      memcpy(text, data + start, (size_t)length);
+      text[length] = 0;
+      int version = text[0] == '3' && text[1] == '.' && strspn(text, "0123456789.") == (size_t)length;
+      int source_id = length > 50 && !strncmp(text, "20", 2) && text[4] == '-' && text[10] == ' ';
+      if (version || source_id || strstr(text, "OMIT_") || strstr(text, "ENABLE_") || strstr(text, "THREADSAFE")) {
+        puts_(b, found++ ? "," : "");
+        put_json_string(b, text);
+      }
+    }
+    start = i + 1;
+  }
+  puts_(b, "]}");
+  free(data);
+}
+
+static void get_diag(int socket) {
+  Buffer b = {0};
+  puts_(&b, "{\"version\":\"" LINEUPD_VERSION "-diag\",\"profileCache\":");
+  diag_list(&b, "/system_data/priv/cache/profile", 2);
+  puts_(&b, ",\"homes\":");
+  diag_list(&b, home_dir, 2);
+
+  puts_(&b, ",\"mounts\":");
+  struct statfs* mounts;
+  int count = getmntinfo(&mounts, MNT_NOWAIT);
+  if (count <= 0) diag_error(&b, strerror(errno));
+  else {
+    puts_(&b, "[");
+    for (int i = 0; i < count; ++i) {
+      puts_(&b, i ? ",{\"from\":" : "{\"from\":");
+      put_json_string(&b, mounts[i].f_mntfromname);
+      puts_(&b, ",\"on\":");
+      put_json_string(&b, mounts[i].f_mntonname);
+      puts_(&b, ",\"type\":");
+      put_json_string(&b, mounts[i].f_fstypename);
+      putf(&b, ",\"flags\":%llu}", (unsigned long long)mounts[i].f_flags);
+    }
+    puts_(&b, "]");
+  }
+
+  puts_(&b, ",\"candidates\":[");
+  int first = 1;
+  diag_candidates(&b, "/data/homebrew", &first);
+  diag_candidates(&b, "/data/etaHEN/games", &first);
+  for (int i = 0; i < 8; ++i) {
+    char root[64];
+    snprintf(root, sizeof root, "/mnt/usb%d/homebrew", i);
+    diag_candidates(&b, root, &first);
+    snprintf(root, sizeof root, "/mnt/ext%d/homebrew", i);
+    diag_candidates(&b, root, &first);
+  }
+  puts_(&b, "],\"shadowmnt\":");
+  diag_list(&b, "/mnt/shadowmnt", 1);
+
+  // The database header records the SQLite version that last wrote it: the home screen's own SQLite.
+  puts_(&b, ",\"appDb\":");
+  unsigned char header[100];
+  int file = open(db_path, O_RDONLY);
+  if (file < 0 || read(file, header, sizeof header) != (ssize_t)sizeof header) diag_error(&b, strerror(errno));
+  else {
+    unsigned writer = (unsigned)header[96] << 24 | header[97] << 16 | header[98] << 8 | header[99];
+    unsigned valid = (unsigned)header[92] << 24 | header[93] << 16 | header[94] << 8 | header[95];
+    putf(&b, "{\"lastWriterSqlite\":%u,\"versionValidFor\":%u,\"writeFormat\":%d,\"readFormat\":%d,\"schema\":",
+         writer, valid, header[18], header[19]);
+    sqlite3* db = open_db(0);
+    if (!db) diag_error(&b, "open failed");
+    else {
+      diag_query(&b, db, "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('trigger','view') OR name LIKE 'lineup%'");
+      puts_(&b, ",\"journalMode\":");
+      diag_query(&b, db, "PRAGMA journal_mode");
+      sqlite3_close(db);
+    }
+    puts_(&b, "}");
+  }
+  if (file >= 0) close(file);
+
+  puts_(&b, ",\"sqliteModules\":{");
+  const char* lib_dirs[] = {"/system/common/lib", "/system/priv/lib", "/system_ex/common_ex/lib", "/system/vsh"};
+  first = 1;
+  for (size_t d = 0; d < sizeof lib_dirs / sizeof *lib_dirs; ++d) {
+    DIR* dir = opendir(lib_dirs[d]);
+    for (struct dirent* entry; dir && (entry = readdir(dir));) {
+      if (!strcasestr(entry->d_name, "sqlite")) continue;
+      char path[512];
+      snprintf(path, sizeof path, "%s/%s", lib_dirs[d], entry->d_name);
+      if (!first) puts_(&b, ",");
+      first = 0;
+      put_json_string(&b, path);
+      puts_(&b, ":");
+      diag_sqlite_module(&b, path);
+    }
+    if (dir) closedir(dir);
+  }
+  puts_(&b, "}}");
+  respond_json(socket, 200, &b);
+  free(b.data);
+}
+
+// Log-only triggers: they record what the system writes to the row and change nothing else.
+static void post_trace(int socket, const char* user) {
+  sqlite3* db = open_db(1);
+  if (!db) { respond_error(socket, 500, "Could not open the home screen database."); return; }
+  char backup[256], message[300], sql[1600];
+  if (!table_exists(db, user)) { sqlite3_close(db); respond_error(socket, 404, "No such profile."); return; }
+  if (check_and_backup(db, backup, sizeof backup, message, sizeof message)) {
+    sqlite3_close(db);
+    respond_error(socket, 500, message);
+    return;
+  }
+  snprintf(sql, sizeof sql,
+           "BEGIN IMMEDIATE;"
+           "CREATE TABLE IF NOT EXISTS lineup_trace (op TEXT, titleId TEXT, beforeIndex INTEGER, afterIndex INTEGER, at INTEGER);"
+           "CREATE TRIGGER lineup_trace_u_%1$s AFTER UPDATE ON tbl_iconinfo_%1$s BEGIN INSERT INTO lineup_trace "
+           "VALUES ('U', NEW.titleId, OLD.lastAccessIndex, NEW.lastAccessIndex, strftime('%%s','now')); END;"
+           "CREATE TRIGGER lineup_trace_i_%1$s AFTER INSERT ON tbl_iconinfo_%1$s BEGIN INSERT INTO lineup_trace "
+           "VALUES ('I', NEW.titleId, NULL, NEW.lastAccessIndex, strftime('%%s','now')); END;"
+           "CREATE TRIGGER lineup_trace_d_%1$s AFTER DELETE ON tbl_iconinfo_%1$s BEGIN INSERT INTO lineup_trace "
+           "VALUES ('D', OLD.titleId, OLD.lastAccessIndex, NULL, strftime('%%s','now')); END;"
+           "COMMIT;", user);
+  char* error = NULL;
+  if (sqlite3_exec(db, sql, NULL, NULL, &error) != SQLITE_OK) {
+    snprintf(message, sizeof message, "Could not install the trace (%s). Nothing changed.", error ? error : "?");
+    sqlite3_free(error);
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_close(db);
+    respond_error(socket, 409, message);
+    return;
+  }
+  sqlite3_close(db);
+  LOG("trace on for %s, backup %s", user, backup);
+  Buffer reply = {0};
+  puts_(&reply, "{\"ok\":true,\"backup\":");
+  put_json_string(&reply, backup);
+  puts_(&reply, "}");
+  respond_json(socket, 200, &reply);
+  free(reply.data);
+}
+
+static void get_trace(int socket) {
+  sqlite3* db = open_db(0);
+  if (!db) { respond_error(socket, 500, "Could not open the home screen database."); return; }
+  Buffer b = {0};
+  puts_(&b, "{\"triggers\":");
+  diag_query(&b, db, "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'lineup_trace_%'");
+  puts_(&b, ",\"rows\":");
+  diag_query(&b, db, "SELECT rowid AS n, op, titleId, beforeIndex, afterIndex, at FROM lineup_trace ORDER BY rowid DESC LIMIT 500");
+  puts_(&b, "}");
+  sqlite3_close(db);
+  respond_json(socket, 200, &b);
+  free(b.data);
+}
+
+static void delete_trace(int socket) {
+  sqlite3* db = open_db(1);
+  if (!db) { respond_error(socket, 500, "Could not open the home screen database."); return; }
+  static char names[64][64];
+  int count = 0;
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'lineup_trace_%'",
+                         -1, &statement, NULL) == SQLITE_OK) {
+    while (count < 64 && sqlite3_step(statement) == SQLITE_ROW)
+      snprintf(names[count++], sizeof names[0], "%s", (const char*)sqlite3_column_text(statement, 0));
+    sqlite3_finalize(statement);
+  }
+  int failed = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK;
+  for (int i = 0; !failed && i < count; ++i) {
+    char sql[128];
+    snprintf(sql, sizeof sql, "DROP TRIGGER \"%s\"", names[i]);
+    failed = sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK;
+  }
+  if (!failed) failed = sqlite3_exec(db, "DROP TABLE IF EXISTS lineup_trace; COMMIT", NULL, NULL, NULL) != SQLITE_OK;
+  if (failed) {
+    char message[300];
+    snprintf(message, sizeof message, "Could not remove the trace (%s).", sqlite3_errmsg(db));
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_close(db);
+    respond_error(socket, 500, message);
+    return;
+  }
+  sqlite3_close(db);
+  LOG("trace off, %d triggers dropped", count);
+  Buffer reply = {0};
+  putf(&reply, "{\"ok\":true,\"dropped\":%d}", count);
+  respond_json(socket, 200, &reply);
+  free(reply.data);
+}
+
+#endif
+
 // Handles one request. Returns 1 when the service should exit.
 static int handle(int socket) {
   static char request[MAX_HEADER + MAX_BODY + 1];
@@ -546,6 +854,17 @@ static int handle(int socket) {
     else post_row(socket, user, body);
   } else if (get && !strncmp(target, "/icon/", 6)) {
     get_icon(socket, target + 6);
+#ifdef LINEUPD_DIAG
+  } else if (get && !strcmp(target, "/diag")) {
+    get_diag(socket);
+  } else if (!strcmp(target, "/diag/trace")) {
+    if (get) get_trace(socket);
+    else if (!authorized) respond_error(socket, 403, "Missing the X-Lineup header.");
+    else if (!strcmp(method, "DELETE")) delete_trace(socket);
+    else if (!post) respond_error(socket, 405, "Use GET, POST or DELETE.");
+    else if (!query_value(query, "user", user, sizeof user) || !is_user_id(user)) respond_error(socket, 400, "user must be 10 digits.");
+    else post_trace(socket, user);
+#endif
   } else if (post && !strcmp(target, "/quit")) {
     if (!authorized) { respond_error(socket, 403, "Missing the X-Lineup header."); return 0; }
     Buffer reply = {0};
