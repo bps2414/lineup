@@ -78,7 +78,9 @@ const Tile = memo(function Tile({game, index, place, lifted, moved, pinned}) {
   const shiftY = up ? -LIFT - grow : 0;
   const uri = api.iconUrl(game);
   return (
-    <motion.View className="absolute left-0 top-0" initial={false} animate={{x}} transition={SPRING}>
+    // The focused game paints above its neighbours, so one sliding past a lifted game goes under it.
+    <motion.View className="absolute left-0 top-0" initial={false} animate={{x}} transition={SPRING}
+      style={{zIndex: focused ? 1 : 0}}>
       <motion.View className="absolute left-0 top-0 w-[128px] h-[128px] origin-top-left" initial={false}
         animate={{scale: focused ? BIG / SMALL : 1, opacity: focused ? 0 : 1}} transition={TILE}>
         <View className="absolute inset-0 rounded-[10px] bg-surface p-3 justify-end">

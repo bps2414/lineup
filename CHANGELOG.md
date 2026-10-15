@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.1
+
+- A lifted game stays on top: moving it left no longer draws the game it passes over it.
+
 ## 1.4.0
 
 - A new version opens on its own when Lineup starts, with its notes. Not now skips that version.

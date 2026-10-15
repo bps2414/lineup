@@ -2,6 +2,11 @@
 
 As notas que o app mostra ao atualizar. Cada versão aqui acompanha a mesma seção do `CHANGELOG.md`.
 
+## 1.4.1
+
+- O jogo levantado fica por cima: ao levar ele para a esquerda, o jogo que ele ultrapassa não passa mais por
+  cima dele.
+
 ## 1.4.0
 
 - Uma versão nova aparece sozinha ao abrir o Lineup, com as novidades. "Agora não" pula essa versão.
