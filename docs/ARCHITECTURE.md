@@ -60,17 +60,20 @@ both against the tag.
 
 ## Service API
 
-All routes are on `127.0.0.1:9077` and answer JSON unless noted. A POST must carry `X-Lineup: 1`, so a
-web page cannot trigger one with a plain form.
+All routes are on `127.0.0.1:9077` and answer JSON unless noted. A POST, and every `/update/` route, must
+carry `X-Lineup: 1`, so a web page cannot trigger one with a plain form.
 
 | Route | Answer |
 | --- | --- |
 | `GET /version` | `{"version"}` |
-| `GET /profiles` | `{"profiles":[{"userId","hex","name"}]}` |
+| `GET /profiles` | `{"profiles":[{"userId","hex","name","avatar"}]}`; `avatar` is the picture's mtime, or 0 |
 | `GET /row?user=<10 digits>` | `{"user","games":[{"titleId","name","index","icon"}]}`, in home order |
 | `GET /icon/<titleId>` | `image/png`, the icon the home screen draws |
+| `GET /avatar/<10 digits>` | `image/png`, `avatar.png` from `/system_data/priv/cache/profile/0x<id>/` (8 or 16 hex digits) |
 | `POST /row?user=<10 digits>` | body `LIN1\n` then `<titleId> <index>\n` per game, in the new order, with the index as read. `{"ok","backup","integrity"}` |
 | `POST /quit` | `{"ok":true}`, then exits |
+| `GET /update/install` | `{"kind":"folder"\|"image","path","previous"}`: the one `PPSA99077` folder or `Lineup-*.exfat` image, and the version kept in `/data/lineup/update/previous/` |
+| `POST /update/apply?version=<x.y.z\|previous>` | `{"ok":true}`, then waits for the app to close, swaps the files and opens it again (see Updates) |
 
 Errors are `{"error": "<English detail>"}`:
 
@@ -81,6 +84,28 @@ Errors are `{"error": "<English detail>"}`:
 - 500: a database failure.
 
 The app shows its own localized title and adds the detail after it.
+
+## Updates
+
+The app reads `https://github.com/bps2414/lineup/releases/latest/download/update.json` (written by
+`scripts/package.sh`: version, notes, and name, size and SHA-256 of the zip and the `.exfat`) when it
+opens, at most once a day, and from Options → Updates. Settings are in `/data/lineup/settings.json`.
+
+1. `Downloads.enqueue` fetches the zip (folder install) or the `.exfat` (image install) into
+   `/data/lineup/update/<version>/`, checked against the manifest's size and SHA-256.
+2. A zip is unpacked with `Archives.extract` into `stage/`, and `PPSA99077/sce_sys/param.json` (title ID,
+   version), `eboot.bin` and `lineupd.elf` are checked.
+3. `POST /update/apply`. lineupd finds the install and the source itself, refuses a version that is not
+   newer, answers, and waits for `sceLncUtilGetAppId` to go negative (30 s at most) plus 500 ms.
+   - Folder: copies it to `/data/lineup/update/previous/`, then writes each new file as `.<name>.new`,
+     flushes and renames it over the old one, and removes what the new version lacks. On failure it puts
+     the saved copy back.
+   - Image: refuses while it is still mounted (`persistent_image_mounts`), moves the old image to
+     `previous/` and the new one into its folder, then waits 25 s for ShadowMountPlus.
+   - Then `sceLncUtilLaunchApp` for the foreground user. A failure is left in
+     `/data/lineup/update/error`, and the app shows it.
+4. The new app replaces lineupd (`ensureService`), writes `/data/lineup/update/ok-<version>` and says it
+   was updated. Going back uses `previous/` the same way.
 
 ## How the home screen stores the row
 

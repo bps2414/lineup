@@ -59,17 +59,21 @@ confere os dois com a tag.
 
 ## API do serviço
 
-Todas as rotas ficam em `127.0.0.1:9077` e respondem JSON, salvo indicação. Um POST precisa do
-cabeçalho `X-Lineup: 1`, para que uma página web não consiga disparar um com um formulário simples.
+Todas as rotas ficam em `127.0.0.1:9077` e respondem JSON, salvo indicação. Um POST, e toda rota
+`/update/`, precisa do cabeçalho `X-Lineup: 1`, para que uma página web não consiga disparar um com um
+formulário simples.
 
 | Rota | Resposta |
 | --- | --- |
 | `GET /version` | `{"version"}` |
-| `GET /profiles` | `{"profiles":[{"userId","hex","name"}]}` |
+| `GET /profiles` | `{"profiles":[{"userId","hex","name","avatar"}]}`; `avatar` é o mtime da foto, ou 0 |
 | `GET /row?user=<10 dígitos>` | `{"user","games":[{"titleId","name","index","icon"}]}`, na ordem da tela inicial |
 | `GET /icon/<titleId>` | `image/png`, o ícone que a tela inicial desenha |
+| `GET /avatar/<10 dígitos>` | `image/png`, o `avatar.png` de `/system_data/priv/cache/profile/0x<id>/` (8 ou 16 dígitos hex) |
 | `POST /row?user=<10 dígitos>` | corpo `LIN1\n` e depois `<titleId> <índice>\n` por jogo, na nova ordem, com o índice lido. `{"ok","backup","integrity"}` |
 | `POST /quit` | `{"ok":true}`, e sai |
+| `GET /update/install` | `{"kind":"folder"\|"image","path","previous"}`: a única pasta `PPSA99077` ou imagem `Lineup-*.exfat`, e a versão guardada em `/data/lineup/update/previous/` |
+| `POST /update/apply?version=<x.y.z\|previous>` | `{"ok":true}`; depois espera o app fechar, troca os arquivos e abre o app de novo (ver Atualização) |
 
 Os erros vêm como `{"error": "<detalhe em inglês>"}`:
 
@@ -80,6 +84,28 @@ Os erros vêm como `{"error": "<detalhe em inglês>"}`:
 - 500: falha no banco.
 
 O app mostra um título próprio no idioma da interface e põe o detalhe depois.
+
+## Atualização
+
+O app lê `https://github.com/bps2414/lineup/releases/latest/download/update.json` (gerado pelo
+`scripts/package.sh`: versão, notas, e nome, tamanho e SHA-256 do zip e do `.exfat`) ao abrir, no máximo
+uma vez por dia, e por Opções → Atualizações. A configuração fica em `/data/lineup/settings.json`.
+
+1. `Downloads.enqueue` baixa o zip (instalação em pasta) ou o `.exfat` (em imagem) para
+   `/data/lineup/update/<versão>/`, conferido com o tamanho e o SHA-256 do manifesto.
+2. O zip é aberto com `Archives.extract` em `stage/`, e o app confere `PPSA99077/sce_sys/param.json`
+   (title ID, versão), `eboot.bin` e `lineupd.elf`.
+3. `POST /update/apply`. O lineupd acha sozinho a instalação e a origem, recusa versão que não seja mais
+   nova, responde e espera `sceLncUtilGetAppId` ficar negativo (no máximo 30 s), mais 500 ms.
+   - Pasta: copia a pasta para `/data/lineup/update/previous/`; depois grava cada arquivo novo como
+     `.<nome>.new`, faz `fsync` e `rename` por cima do antigo, e apaga o que a versão nova não tem. Se
+     falhar, devolve a cópia salva.
+   - Imagem: recusa se ela continuar montada (`persistent_image_mounts`), move a antiga para
+     `previous/` e a nova para a pasta dela, e espera 25 s pelo ShadowMountPlus.
+   - Depois, `sceLncUtilLaunchApp` para o usuário em primeiro plano. Uma falha fica em
+     `/data/lineup/update/error`, e o app mostra.
+4. O app novo troca o lineupd (`ensureService`), grava `/data/lineup/update/ok-<versão>` e avisa que foi
+   atualizado. Voltar à versão anterior usa `previous/` pelo mesmo caminho.
 
 ## Como a tela inicial guarda a fileira
 

@@ -15,12 +15,16 @@ out on the TV. Its local service then writes the new order where the home screen
 
 - **Lift, move, drop.** ✕ lifts the focused game, the D-pad carries it and ✕ drops it. ◯ while carrying
   puts it back.
-- **Every profile.** Each console profile has its own row. Switch from the Options menu.
+- **Every profile.** Each console profile has its own row, shown with its picture. Switch from the
+  Options menu.
 - **Home screen edge.** The home screen shows only the first 12 games. A divider in the row and a mark
   on the ruler show where that edge falls, and games past it read "not on the home screen".
 - **Sort A to Z**, discard changes, and a count of the games that moved.
 - **Applies on exit.** Saving closes the app, and the home screen comes back with the new order. No
   restart needed.
+- **Updates in the app.** Lineup checks for a new release once a day (Options → Updates turns that off),
+  downloads it when you choose **Update**, and opens again on the new version. Options → Updates can
+  also go back to the previous version. This works from 1.2.0 on.
 - **English and Brazilian Portuguese**, chosen from the console's system language.
 
 ![The Options menu](docs/images/options.png)

@@ -272,7 +272,8 @@ def main():
         for source in payload_sources:
             payload = BUILD / (source.stem + ".elf")
             run([sdk / "bin/prospero-clang", "-std=gnu11", "-O2", "-Wall", "-Wextra", "-Werror", "-I", sqlite,
-                 source, sqlite_object, "-lkernel_sys", "-o", payload], env=env, log=BUILD / (source.stem + ".log"))
+                 source, sqlite_object, "-lkernel_sys", "-lSceUserService", "-lSceSystemService", "-o", payload],
+                env=env, log=BUILD / (source.stem + ".log"))
             payload_elfs.append(payload)
     if args.compile_only:
         print(f"PS5 ELF linked: {elf}; no application package generated")

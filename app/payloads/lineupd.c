@@ -8,12 +8,16 @@
 //
 // Endpoints (JSON unless noted), on 127.0.0.1:9077 (0.0.0.0 when built with -DLINEUPD_LAN):
 //   GET  /version                {"version"}
-//   GET  /profiles                 {"profiles":[{"userId","hex","name"}]}
+//   GET  /profiles                 {"profiles":[{"userId","hex","name","avatar"}]}
 //   GET  /row?user=<10 dig>  {"user","games":[{"titleId","name","index","icon"}]}
 //   GET  /icon/<titleId>         image/png
+//   GET  /avatar/<10 dig>        image/png, the profile's picture
 //   POST /row?user=<10 dig>  X-Lineup: 1; body "LIN1\n" then "<titleId> <index>\n" per game,
 //                                in the new order, with the index the client read
 //   POST /quit                   X-Lineup: 1; exits after answering
+//   GET  /update/install         X-Lineup: 1; {"kind":"folder"|"image","path","previous"}
+//   POST /update/apply?version=<x.y.z|previous>  X-Lineup: 1; answers, waits for the app to close, swaps its
+//                                files for the downloaded ones (or the previous ones) and opens it again
 //
 // Built with -DLINEUPD_DIAG (port 9078, LAN), also:
 //   GET    /diag                 avatars, homes, mounts, install candidates, SQLite version and strings
@@ -39,7 +43,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include "sqlite3.h"
-#ifdef LINEUPD_DIAG
+#ifndef LINEUPD_TEST
 #include <sys/param.h>
 #include <sys/mount.h>
 #endif
@@ -52,7 +56,8 @@
 #define LOG(fmt, ...) klog_printf("[lineupd] " fmt "\n", ##__VA_ARGS__)
 #endif
 
-#define LINEUPD_VERSION "1.1.0"
+#define LINEUPD_VERSION "1.2.0"
+#define TITLE_ID "PPSA99077"
 #ifdef LINEUPD_DIAG
 // Phase 0 diagnostic build (docs/pt-BR/PLANO-1.2.md): its own port, open to the LAN, so it runs beside the
 // app's lineupd and still answers when the home screen does not.
@@ -70,6 +75,8 @@ static const char* db_path = "/system_data/priv/mms/app.db";
 static const char* backup_dir = "/data/lineup/backups";
 static const char* home_dir = "/user/home";
 static const char* appmeta_dir = "/user/appmeta";
+static const char* profile_cache_dir = "/system_data/priv/cache/profile";
+static const char* update_dir = "/data/lineup/update";
 
 // ---- Growable text buffer with JSON escaping ----
 
@@ -343,6 +350,183 @@ done:
   return status;
 }
 
+// ---- Profile pictures ----
+
+// The picture of `user` (10 digits, already validated): avatar.png in profile_cache_dir/0x<id>, where the id is
+// hex of 8 or 16 digits. Matches the whole value or its low 32 bits. Returns 0 with `out` set when a folder matches.
+static int avatar_path(const char* user, char* out, size_t size) {
+  unsigned long long id = strtoull(user, NULL, 10);
+  DIR* dir = opendir(profile_cache_dir);
+  int found = -1;
+  for (struct dirent* entry; dir && found && (entry = readdir(dir));) {
+    const char* name = entry->d_name;
+    if (name[0] != '0' || (name[1] != 'x' && name[1] != 'X') || !isxdigit((unsigned char)name[2]) || strlen(name) > 18) continue;
+    char* end;
+    unsigned long long value = strtoull(name + 2, &end, 16);
+    if (*end || (value != id && (value & 0xffffffffULL) != id)) continue;
+    snprintf(out, size, "%s/%s/avatar.png", profile_cache_dir, name);
+    found = 0;
+  }
+  if (dir) closedir(dir);
+  return found;
+}
+
+// ---- Update files ----
+
+// "1.2.0", or param.json's "01.002.000", as one comparable number; -1 when malformed.
+static long version_number(const char* text) {
+  unsigned major, minor, patch;
+  char extra;
+  if (!text || !*text || strspn(text, "0123456789.") != strlen(text) ||
+      sscanf(text, "%u.%u.%u%c", &major, &minor, &patch, &extra) != 3 || major > 999 || minor > 999 || patch > 999)
+    return -1;
+  return (long)major * 1000000 + minor * 1000 + patch;
+}
+
+// The string value of "key" in a flat JSON text, copied into `out`; NULL when absent.
+static const char* json_text(const char* json, const char* key, char* out, size_t size) {
+  char quoted[64];
+  snprintf(quoted, sizeof quoted, "\"%s\"", key);
+  const char* p = strstr(json, quoted);
+  if (!p) return NULL;
+  for (p += strlen(quoted); isspace((unsigned char)*p); ++p) {}
+  if (*p++ != ':') return NULL;
+  while (isspace((unsigned char)*p)) ++p;
+  if (*p++ != '"') return NULL;
+  size_t length = strcspn(p, "\"");
+  if (p[length] != '"' || length >= size) return NULL;
+  memcpy(out, p, length);
+  out[length] = 0;
+  return out;
+}
+
+static int is_file(const char* dir, const char* name) {
+  char path[512];
+  struct stat info;
+  snprintf(path, sizeof path, "%s/%s", dir, name);
+  return !stat(path, &info) && S_ISREG(info.st_mode);
+}
+
+// The version of an app folder ready to install (sce_sys/param.json for TITLE_ID, eboot.bin, lineupd.elf), or -1.
+static long app_folder_version(const char* dir) {
+  static char text[16 * 1024];
+  char path[512], value[32];
+  snprintf(path, sizeof path, "%s/sce_sys/param.json", dir);
+  FILE* file = fopen(path, "rb");
+  if (!file) return -1;
+  size_t size = fread(text, 1, sizeof text - 1, file);
+  fclose(file);
+  text[size] = 0;
+  if (!json_text(text, "titleId", value, sizeof value) || strcmp(value, TITLE_ID) ||
+      !is_file(dir, "eboot.bin") || !is_file(dir, "lineupd.elf"))
+    return -1;
+  return json_text(text, "contentVersion", value, sizeof value) ? version_number(value) : -1;
+}
+
+static int is_dot(const char* name) { return !strcmp(name, ".") || !strcmp(name, ".."); }
+
+// Removes a file, or a directory and everything in it; links are removed, never followed. 0 once it is gone.
+static int remove_tree(const char* path) {
+  struct stat info;
+  if (lstat(path, &info)) return errno == ENOENT ? 0 : -1;
+  if (!S_ISDIR(info.st_mode)) return unlink(path);
+  DIR* dir = opendir(path);
+  if (!dir) return -1;
+  int failed = 0;
+  // Passes until one removes nothing: removing entries while reading a directory may skip some.
+  for (int removed = 1; removed && !failed;) {
+    removed = 0;
+    rewinddir(dir);
+    for (struct dirent* entry; !failed && (entry = readdir(dir));) {
+      if (is_dot(entry->d_name)) continue;
+      char child[512];
+      snprintf(child, sizeof child, "%s/%s", path, entry->d_name);
+      failed = remove_tree(child);
+      removed = 1;
+    }
+  }
+  closedir(dir);
+  return failed || rmdir(path) ? -1 : 0;
+}
+
+// Copies a file to `to`, created or truncated, and flushes it to the disk.
+static int copy_file(const char* from, const char* to) {
+  static char chunk[64 * 1024];
+  int in = open(from, O_RDONLY), out = in < 0 ? -1 : open(to, O_WRONLY | O_CREAT | O_TRUNC, 0777);
+  int failed = out < 0;
+  for (ssize_t count; !failed && (count = read(in, chunk, sizeof chunk)) != 0;)
+    failed = count < 0 || write(out, chunk, (size_t)count) != count;
+  // The console's own services read a title's files, so they are open to every user.
+  if (!failed) failed = fchmod(out, 0777) || fsync(out);
+  if (in >= 0) close(in);
+  if (out >= 0 && close(out)) failed = 1;
+  return failed ? -1 : 0;
+}
+
+// Copies the directory `from` to `to`, which must not exist yet.
+static int copy_tree(const char* from, const char* to) {
+  DIR* dir = opendir(from);
+  if (!dir || mkdir(to, 0777) || chmod(to, 0777)) {
+    if (dir) closedir(dir);
+    return -1;
+  }
+  int failed = 0;
+  for (struct dirent* entry; !failed && (entry = readdir(dir));) {
+    if (is_dot(entry->d_name)) continue;
+    char source[512], target[512];
+    struct stat info;
+    snprintf(source, sizeof source, "%s/%s", from, entry->d_name);
+    snprintf(target, sizeof target, "%s/%s", to, entry->d_name);
+    if (stat(source, &info)) failed = -1;
+    else if (S_ISDIR(info.st_mode)) failed = copy_tree(source, target);
+    else if (S_ISREG(info.st_mode)) failed = copy_file(source, target);
+  }
+  closedir(dir);
+  return failed ? -1 : 0;
+}
+
+// Makes the directory `to` hold what `from` holds, one file at a time: each file is written beside the old one
+// as .<name>.new, flushed and renamed over it; then what `from` lacks is removed. `to` stays the same directory,
+// so a mount of it (ShadowMountPlus mounts an app folder with nullfs) sees the new files.
+static int swap_tree(const char* from, const char* to) {
+  if (mkdir(to, 0777) && errno != EEXIST) return -1;
+  DIR* dir = opendir(from);
+  if (!dir) return -1;
+  int failed = 0;
+  for (struct dirent* entry; !failed && (entry = readdir(dir));) {
+    if (is_dot(entry->d_name)) continue;
+    char source[512], target[512], temporary[512];
+    struct stat info, old;
+    snprintf(source, sizeof source, "%s/%s", from, entry->d_name);
+    snprintf(target, sizeof target, "%s/%s", to, entry->d_name);
+    snprintf(temporary, sizeof temporary, "%s/.%s.new", to, entry->d_name);
+    int exists = !lstat(target, &old);
+    if (stat(source, &info)) failed = -1;
+    else if (S_ISDIR(info.st_mode))
+      failed = (exists && !S_ISDIR(old.st_mode) && remove_tree(target)) || swap_tree(source, target);
+    else if (S_ISREG(info.st_mode))
+      failed = (exists && S_ISDIR(old.st_mode) && remove_tree(target)) || copy_file(source, temporary) ||
+               rename(temporary, target);
+  }
+  closedir(dir);
+  if (failed || !(dir = opendir(to))) return -1;
+  for (int removed = 1; removed && !failed;) {
+    removed = 0;
+    rewinddir(dir);
+    for (struct dirent* entry; !failed && (entry = readdir(dir));) {
+      char source[512], target[512];
+      struct stat info;
+      snprintf(source, sizeof source, "%s/%s", from, entry->d_name);
+      if (is_dot(entry->d_name) || !lstat(source, &info)) continue;
+      snprintf(target, sizeof target, "%s/%s", to, entry->d_name);
+      failed = remove_tree(target);
+      removed = 1;
+    }
+  }
+  closedir(dir);
+  return failed ? -1 : 0;
+}
+
 #ifndef LINEUPD_TEST
 
 // ---- HTTP ----
@@ -415,7 +599,10 @@ static void get_profiles(int socket) {
     put_json_string(&body, entry->d_name);
     puts_(&body, ",\"name\":");
     put_json_string(&body, *name ? name : entry->d_name);
-    puts_(&body, "}");
+    char avatar[512];
+    struct stat info;
+    putf(&body, ",\"avatar\":%lld}", avatar_path(user, avatar, sizeof avatar) || stat(avatar, &info) ? 0
+         : (long long)info.st_mtime);
   }
   if (dir) closedir(dir);
   puts_(&body, "]}");
@@ -456,18 +643,12 @@ static void get_row(int socket, const char* user) {
   free(body.data);
 }
 
-static void get_icon(int socket, const char* title) {
-  if (!is_title_id(title)) { respond_error(socket, 400, "Invalid title ID."); return; }
-  char path[256];
-  sqlite3* db = open_db(0);
-  if (!db) { respond_error(socket, 500, "Could not open the home screen database."); return; }
-  icon_path(db, title, path, sizeof path);
-  sqlite3_close(db);
+static void send_png(int socket, const char* path, const char* missing) {
   int file = open(path, O_RDONLY);
   struct stat info;
   if (file < 0 || fstat(file, &info)) {
     if (file >= 0) close(file);
-    respond_error(socket, 404, "This game has no icon.");
+    respond_error(socket, 404, missing);
     return;
   }
   char header[192];
@@ -478,6 +659,23 @@ static void get_icon(int socket, const char* title) {
     for (ssize_t count; (count = read(file, chunk, sizeof chunk)) > 0;)
       if (send_all(socket, chunk, (size_t)count)) break;
   close(file);
+}
+
+static void get_icon(int socket, const char* title) {
+  if (!is_title_id(title)) { respond_error(socket, 400, "Invalid title ID."); return; }
+  char path[256];
+  sqlite3* db = open_db(0);
+  if (!db) { respond_error(socket, 500, "Could not open the home screen database."); return; }
+  icon_path(db, title, path, sizeof path);
+  sqlite3_close(db);
+  send_png(socket, path, "This game has no icon.");
+}
+
+static void get_avatar(int socket, const char* user) {
+  if (!is_user_id(user)) { respond_error(socket, 400, "user must be 10 digits."); return; }
+  char path[512];
+  if (avatar_path(user, path, sizeof path)) { respond_error(socket, 404, "This profile has no picture."); return; }
+  send_png(socket, path, "This profile has no picture.");
 }
 
 static void post_row(int socket, const char* user, const char* body) {
@@ -511,6 +709,239 @@ static const char* query_value(const char* query, const char* name, char* out, s
       return out;
     }
   return NULL;
+}
+
+// ---- Updates ----
+
+typedef struct {
+  uint32_t size, user_id, app_opt;
+  uint64_t crash_report;
+  uint32_t check_flag;
+} LncAppParam;
+
+int sceUserServiceInitialize(void*);
+int sceUserServiceGetForegroundUser(int*);
+int sceLncUtilGetAppId(const char* title_id);
+int sceLncUtilLaunchApp(const char* title_id, const char** argv, LncAppParam* param);
+
+typedef struct { char path[256]; int image; } Install;
+
+static int is_image_name(const char* name) {
+  size_t length = strlen(name);
+  return !strncmp(name, "Lineup-", 7) && length > 13 && !strcmp(name + length - 6, ".exfat");
+}
+
+// Where ShadowMountPlus finds Lineup: a TITLE_ID folder or a Lineup-*.exfat image. Returns how many there are
+// and keeps the first in `install`; an update needs exactly one.
+static int find_install(Install* install) {
+  char roots[18][32] = {"/data/homebrew", "/data/etaHEN/games"};
+  for (int i = 0; i < 8; ++i) {
+    snprintf(roots[2 + i], sizeof roots[0], "/mnt/usb%d/homebrew", i);
+    snprintf(roots[10 + i], sizeof roots[0], "/mnt/ext%d/homebrew", i);
+  }
+  int count = 0;
+  for (int r = 0; r < 18; ++r) {
+    DIR* dir = opendir(roots[r]);
+    for (struct dirent* entry; dir && (entry = readdir(dir));) {
+      int image = is_image_name(entry->d_name);
+      if (!image && strcmp(entry->d_name, TITLE_ID)) continue;
+      char path[256];
+      struct stat info;
+      snprintf(path, sizeof path, "%s/%s", roots[r], entry->d_name);
+      if (stat(path, &info) || (image ? !S_ISREG(info.st_mode) : !S_ISDIR(info.st_mode))) continue;
+      if (!count++) { snprintf(install->path, sizeof install->path, "%s", path); install->image = image; }
+    }
+    if (dir) closedir(dir);
+  }
+  return count;
+}
+
+// What `name` (a directory in update_dir) holds for this kind of install: the TITLE_ID folder or the one
+// Lineup-<version>.exfat. Returns its version, or -1 when there is none.
+static long saved_source(int image, const char* name, char* out, size_t size) {
+  char dir_path[256];
+  snprintf(dir_path, sizeof dir_path, "%s/%s", update_dir, name);
+  if (!image) {
+    snprintf(out, size, "%s/%s", dir_path, TITLE_ID);
+    return app_folder_version(out);
+  }
+  long version = -1;
+  DIR* dir = opendir(dir_path);
+  for (struct dirent* entry; dir && version < 0 && (entry = readdir(dir));) {
+    if (!is_image_name(entry->d_name) || !is_file(dir_path, entry->d_name)) continue;
+    char text[32];
+    snprintf(text, sizeof text, "%.*s", (int)strlen(entry->d_name) - 13, entry->d_name + 7);
+    snprintf(out, size, "%s/%s", dir_path, entry->d_name);
+    version = version_number(text);
+  }
+  if (dir) closedir(dir);
+  return version;
+}
+
+// ShadowMountPlus mounts an image at /mnt/shadowmnt/<image name>_<hash>.
+// ponytail: matched by name; compare the mount's backing file if a renamed image is ever missed.
+static int image_mounted(const char* image) {
+  const char* name = strrchr(image, '/') + 1;
+  char stem[128];
+  snprintf(stem, sizeof stem, "%.*s", (int)strlen(name) - 6, name);
+  struct statfs* mounts;
+  int count = getmntinfo(&mounts, MNT_NOWAIT);
+  for (int i = 0; i < count; ++i)
+    if (strstr(mounts[i].f_mntonname, stem) || strstr(mounts[i].f_mntfromname, stem)) return 1;
+  return 0;
+}
+
+static struct { int pending, rollback; Install install; char source[256]; } update;
+
+static void get_update_install(int socket) {
+  Install install;
+  int count = find_install(&install);
+  if (count != 1) {
+    respond_error(socket, 409, count ? "There is more than one Lineup folder or image. Keep only one."
+                                     : "Could not find the Lineup folder or image.");
+    return;
+  }
+  char source[512];
+  long previous = saved_source(install.image, "previous", source, sizeof source);
+  Buffer reply = {0};
+  puts_(&reply, install.image ? "{\"kind\":\"image\",\"path\":" : "{\"kind\":\"folder\",\"path\":");
+  put_json_string(&reply, install.path);
+  if (previous < 0) puts_(&reply, ",\"previous\":\"\"}");
+  else putf(&reply, ",\"previous\":\"%ld.%ld.%ld\"}", previous / 1000000, previous / 1000 % 1000, previous % 1000);
+  respond_json(socket, 200, &reply);
+  free(reply.data);
+}
+
+// Checks everything it can while the app still runs, answers, and leaves the swap to run_update.
+static void post_update_apply(int socket, const char* query) {
+  char version[16];
+  if (!query_value(query, "version", version, sizeof version)) { respond_error(socket, 400, "version is missing."); return; }
+  int rollback = !strcmp(version, "previous");
+  long number = rollback ? 0 : version_number(version);
+  if (!rollback && number <= version_number(LINEUPD_VERSION)) {
+    respond_error(socket, 409, "Only a newer version installs this way.");
+    return;
+  }
+  Install install;
+  int count = find_install(&install);
+  if (count != 1) {
+    respond_error(socket, 409, count ? "There is more than one Lineup folder or image. Keep only one."
+                                     : "Could not find the Lineup folder or image.");
+    return;
+  }
+  // Every path comes from here, never from the request: update_dir/<version>/... or update_dir/previous/...
+  char source[512];
+  long found;
+  struct stat info, target;
+  if (rollback) found = saved_source(install.image, "previous", source, sizeof source);
+  else if (install.image) {
+    snprintf(source, sizeof source, "%s/%s/Lineup-%s.exfat", update_dir, version, version);
+    found = !stat(source, &info) && S_ISREG(info.st_mode) ? number : -1;
+  } else {
+    snprintf(source, sizeof source, "%s/%s/stage/%s", update_dir, version, TITLE_ID);
+    found = app_folder_version(source);
+  }
+  if (found < 0 || (!rollback && found != number)) {
+    respond_error(socket, 409, rollback ? "There is no previous version." : "The downloaded update is missing or incomplete.");
+    return;
+  }
+  if (install.image) {
+    // An image is moved, not copied: it must be on the drive the installed one is on.
+    char folder[256];
+    snprintf(folder, sizeof folder, "%.*s", (int)(strrchr(install.path, '/') - install.path), install.path);
+    if (stat(source, &info) || stat(folder, &target) || info.st_dev != target.st_dev) {
+      char message[600];
+      snprintf(message, sizeof message, "The image is on another drive. Put %s in %s by hand.", source, folder);
+      respond_error(socket, 409, message);
+      return;
+    }
+  }
+  update.pending = 1;
+  update.rollback = rollback;
+  update.install = install;
+  snprintf(update.source, sizeof update.source, "%s", source);
+  LOG("update to %s from %s, %s", version, source, install.path);
+  Buffer reply = {0};
+  puts_(&reply, "{\"ok\":true}");
+  respond_json(socket, 200, &reply);
+  free(reply.data);
+}
+
+// Leaves `message` in update_dir/error, for the app to show when it opens again.
+static void update_failed(const char* format, ...) {
+  char message[600], path[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(message, sizeof message, format, args);
+  va_end(args);
+  LOG("update failed: %s", message);
+  snprintf(path, sizeof path, "%s/error", update_dir);
+  FILE* file = fopen(path, "w");
+  if (file) { fputs(message, file); fclose(file); }
+}
+
+// Swaps the installed files for update.source. The installed version goes to update_dir/previous first; when
+// rolling back, previous/ itself is the source, so it moves aside to rollback/ until the swap is done.
+static void replace_files(void) {
+  char previous[256], rollback[256], source[512], saved[512];
+  snprintf(previous, sizeof previous, "%s/previous", update_dir);
+  snprintf(rollback, sizeof rollback, "%s/rollback", update_dir);
+  snprintf(source, sizeof source, "%s", update.source);
+  const char* installed = update.install.path;
+  if (update.rollback) {
+    remove_tree(rollback);
+    if (rename(previous, rollback)) { update_failed("Could not move the previous version aside (%s). Nothing changed.", strerror(errno)); return; }
+    snprintf(source, sizeof source, "%s/%s", rollback, strrchr(update.source, '/') + 1);
+  }
+  int failed = remove_tree(previous);
+  make_dirs(previous);
+  snprintf(saved, sizeof saved, "%s/%s", previous, strrchr(installed, '/') + 1);
+  if (failed) update_failed("Could not clear %s (%s). Nothing changed.", previous, strerror(errno));
+  else if (update.install.image) {
+    // ShadowMountPlus lets the image go when the app closes, unless persistent_image_mounts is on.
+    for (int i = 0; i < 20 && image_mounted(installed); ++i) usleep(500 * 1000);
+    char target[512];
+    snprintf(target, sizeof target, "%.*s/%s", (int)(strrchr(installed, '/') - installed), installed,
+             strrchr(source, '/') + 1);
+    if ((failed = image_mounted(installed)))
+      update_failed("The image is still mounted (persistent_image_mounts?). Nothing changed: put %s in place of %s by hand.",
+                    source, installed);
+    else if ((failed = rename(installed, saved)))
+      update_failed("Could not move %s aside (%s). Nothing changed.", installed, strerror(errno));
+    else if ((failed = rename(source, target))) {
+      update_failed("Could not move the new image into place (%s). Nothing changed.", strerror(errno));
+      rename(saved, installed);
+    } else {
+      // ShadowMountPlus looks every 15 s and takes a new source once it has been still for 10 s.
+      sleep(25);
+    }
+  } else if ((failed = copy_tree(installed, saved))) {
+    update_failed("Could not copy the installed version to %s (%s). Nothing changed.", saved, strerror(errno));
+  } else if ((failed = swap_tree(source, installed))) {
+    int restored = !swap_tree(saved, installed);
+    update_failed("Could not replace the files (%s). %s", strerror(errno),
+                  restored ? "The installed version was put back." : "Copy the app folder again by FTP.");
+  }
+  if (update.rollback && failed) { remove_tree(previous); rename(rollback, previous); }
+  else if (update.rollback) remove_tree(rollback);
+}
+
+// What relauncher.c does: wait for the app to close, then open it again for the foreground user.
+static void run_update(void) {
+  update.pending = 0;
+  char error[256];
+  snprintf(error, sizeof error, "%s/error", update_dir);
+  unlink(error);
+  for (int waited = 0; sceLncUtilGetAppId(TITLE_ID) >= 0; waited += 100) {
+    if (waited >= 30000) { update_failed("Lineup did not close within 30 seconds. Nothing changed."); return; }
+    usleep(100 * 1000);
+  }
+  usleep(500 * 1000);
+  replace_files();
+  sceUserServiceInitialize(NULL);
+  LncAppParam param = {sizeof param, 0, 0, 0, 0};
+  sceUserServiceGetForegroundUser((int*)&param.user_id);
+  LOG("launch %s: %d", TITLE_ID, sceLncUtilLaunchApp(TITLE_ID, NULL, &param));
 }
 
 #ifdef LINEUPD_DIAG
@@ -629,7 +1060,7 @@ static void diag_sqlite_module(Buffer* b, const char* path) {
 static void get_diag(int socket) {
   Buffer b = {0};
   puts_(&b, "{\"version\":\"" LINEUPD_VERSION "-diag\",\"profileCache\":");
-  diag_list(&b, "/system_data/priv/cache/profile", 2);
+  diag_list(&b, profile_cache_dir, 2);
   puts_(&b, ",\"homes\":");
   diag_list(&b, home_dir, 2);
 
@@ -854,6 +1285,13 @@ static int handle(int socket) {
     else post_row(socket, user, body);
   } else if (get && !strncmp(target, "/icon/", 6)) {
     get_icon(socket, target + 6);
+  } else if (get && !strncmp(target, "/avatar/", 8)) {
+    get_avatar(socket, target + 8);
+  } else if (!strncmp(target, "/update/", 8)) {
+    if (!authorized) respond_error(socket, 403, "Missing the X-Lineup header.");
+    else if (get && !strcmp(target, "/update/install")) get_update_install(socket);
+    else if (post && !strcmp(target, "/update/apply")) post_update_apply(socket, query);
+    else respond_error(socket, 404, "Unknown route.");
 #ifdef LINEUPD_DIAG
   } else if (get && !strcmp(target, "/diag")) {
     get_diag(socket);
@@ -908,6 +1346,8 @@ int main(void) {
     setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
     quit = handle(client);
     close(client);
+    // After the answer is out: the app closes once it has it.
+    if (update.pending) run_update();
   }
   close(server);
   LOG("exit");
@@ -973,6 +1413,30 @@ int main(int argc, char** argv) {
   read_row(db, user, after, NULL, MAX_GAMES);
   sqlite3_close(db);
   for (int i = 0; i < count; ++i) assert(!strcmp(after[i].title, before[i].title) && after[i].index == before[i].index);
+
+  // Profile pictures: folders named with 8 and 16 hex digits.
+  profile_cache_dir = "/tmp/lineupd-test-profile";
+  assert(!system("rm -rf /tmp/lineupd-test-profile && mkdir -p /tmp/lineupd-test-profile/0x12F0D5AE "
+                 "/tmp/lineupd-test-profile/0x0000000112F0D5AF /tmp/lineupd-test-profile/other"));
+  char avatar[512];
+  assert(!avatar_path("0317773230", avatar, sizeof avatar) && !strcmp(avatar, "/tmp/lineupd-test-profile/0x12F0D5AE/avatar.png"));
+  assert(!avatar_path("0317773231", avatar, sizeof avatar) && strstr(avatar, "/0x0000000112F0D5AF/avatar.png"));
+  assert(avatar_path("0000000005", avatar, sizeof avatar));
+
+  // Updates: versions, a staged app folder, and a swap that adds, replaces and removes files.
+  assert(version_number("1.2.0") == 1002000 && version_number("01.002.000") == 1002000);
+  assert(version_number("1.2") < 0 && version_number("1.2.0.") < 0 && version_number(" 1.2.0") < 0 && version_number("previous") < 0);
+  assert(!system("rm -rf /tmp/lineupd-test-update && mkdir -p /tmp/lineupd-test-update/new/sce_sys "
+                 "/tmp/lineupd-test-update/new/fonts /tmp/lineupd-test-update/cur/old && cd /tmp/lineupd-test-update && "
+                 "printf '{\\n  \"contentVersion\": \"01.002.000\",\\n  \"titleId\": \"PPSA99077\"\\n}\\n' > new/sce_sys/param.json && "
+                 "echo new > new/eboot.bin && echo d > new/lineupd.elf && echo f > new/fonts/a.ttf && "
+                 "echo old > cur/eboot.bin && echo gone > cur/gone.txt && echo x > cur/old/x && echo x > cur/fonts"));
+  assert(app_folder_version("/tmp/lineupd-test-update/new") == 1002000 && app_folder_version("/tmp/lineupd-test-update/cur") < 0);
+  assert(!copy_tree("/tmp/lineupd-test-update/cur", "/tmp/lineupd-test-update/saved"));
+  assert(!swap_tree("/tmp/lineupd-test-update/new", "/tmp/lineupd-test-update/cur"));
+  assert(!system("cd /tmp/lineupd-test-update && diff -r new cur && [ \"$(cat saved/eboot.bin)\" = old ] && "
+                 "[ -f saved/old/x ] && [ -z \"$(ls -A cur | grep '\\.new$')\" ]"));
+  assert(!remove_tree("/tmp/lineupd-test-update") && !remove_tree("/tmp/lineupd-test-update"));
   printf("logic ok, db round trip ok (%d games, backup %s)\n", count, backup);
   return 0;
 }

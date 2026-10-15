@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package the built app into dist/: exFAT image (ShadowMountPlus), FTP zip, source tarball, SHA256SUMS.
+# Package the built app into dist/: exFAT image (ShadowMountPlus), FTP zip, source tarball, update.json, SHA256SUMS.
 # Usage: scripts/package.sh <version> [--no-exfat]   (exFAT step needs sudo, mkfs.exfat from exfatprogs)
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,6 +35,26 @@ if [ "$NO_EXFAT" != "--no-exfat" ]; then
   sync
   sudo umount "$MNT"; rmdir "$MNT"; [ -z "${LOOP:-}" ] || sudo losetup -d "$LOOP"
 fi
+
+# update.json, the in-app updater's manifest. The notes are this version's CHANGELOG.md section; there is no
+# Portuguese changelog, so pt-BR repeats the English text.
+awk -v v="$VERSION" '/^## /{p = ($2 == v); next} p' "$ROOT/CHANGELOG.md" > "$STAGE/notes.md"
+python3 - "$DIST" "$VERSION" "$STAGE/notes.md" <<'EOF'
+import hashlib, json, os, sys
+dist, version, notes = sys.argv[1], sys.argv[2], open(sys.argv[3], encoding="utf-8").read().strip()
+def entry(name):
+    digest = hashlib.sha256()
+    with open(os.path.join(dist, name), "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return {"name": name, "size": os.path.getsize(os.path.join(dist, name)), "sha256": digest.hexdigest()}
+manifest = {"version": version, "notes": {"en": notes, "pt-BR": notes}, "zip": entry(f"Lineup-{version}.zip")}
+if os.path.exists(os.path.join(dist, f"Lineup-{version}.exfat")):
+    manifest["exfat"] = entry(f"Lineup-{version}.exfat")
+with open(os.path.join(dist, "update.json"), "w", encoding="utf-8") as f:
+    json.dump(manifest, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+EOF
 
 (cd "$DIST" && sha256sum -- * > SHA256SUMS.tmp && mv SHA256SUMS.tmp SHA256SUMS)
 ls -l "$DIST"
