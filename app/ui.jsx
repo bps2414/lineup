@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Lineup's interface pieces: the mark, profile pictures, controller glyphs, button hints, the lift light, the
-// side sheet, dialogs, buttons, full-screen messages and the toast. Black and white only.
+// Lineup's interface pieces: the mark, profile pictures, controller glyphs, button hints, the lift light, the pin
+// badge, the side sheet, dialogs, buttons, full-screen messages and the toast. Black and white only.
 import {useEffect} from 'react';
 import {Animated, Circle, Easing, FocusScope, Image, Path, Rect, Svg, Text, View, motion, transitions,
   useAnimatedValue, useIsFocused} from '@ps5-react/core';
@@ -97,6 +97,20 @@ export function LiftLight({radius}) {
       <Animated.View pointerEvents="none" style={[fill, {borderSweepColor: '#ffffff', borderSweepWidth: px(3),
         borderSweepLength: 0.45, borderSweepPhase: phase}]} />
     </>
+  );
+}
+
+/** A pushpin on a dark disc, in a pinned game's corner: the 168 px icon's when `big`, else the 128 px one's. */
+export function PinBadge({big = false}) {
+  const size = big ? 30 : 24;
+  return (
+    <View className={big ? 'absolute right-4 top-4 rounded-full bg-black/70 items-center justify-center'
+      : 'absolute right-1.5 top-1.5 rounded-full bg-black/70 items-center justify-center'}
+      style={{width: px(size), height: px(size)}}>
+      <Svg width={px(size * 0.7)} height={px(size * 0.7)} viewBox="0 0 24 24">
+        <Path d="M8.5 3.5h7M10 3.5v6l-3 3.5h10l-3-3.5v-6M12 13v7.5" {...MARK} />
+      </Svg>
+    </View>
   );
 }
 

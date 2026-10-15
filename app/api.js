@@ -97,16 +97,21 @@ async function read(path, what) {
 }
 
 export const profiles = async () => (await read('/profiles', T.service.profiles)).profiles ?? [];
-export const row = async user => (await read(`/row?user=${user}`, T.service.row)).games ?? [];
+/** {games, pins}: each game's `pinned` is its slot or null; `pins` is 'on', 'missing' (triggers lost) or 'off'. */
+export async function row(user) {
+  const data = await read(`/row?user=${user}`, T.service.row);
+  return {games: data.games ?? [], pins: data.pins ?? 'off'};
+}
 export const iconUrl = game => `${BASE}/icon/${game.titleId}?m=${game.icon}`;
 export const avatarUrl = profile => `${BASE}/avatar/${profile.userId}?m=${profile.avatar}`;
 
 /**
- * Saves `order` (titleIds) for `user`, sending each game's index as it was read. Resolves to
- * {ok: true} or {ok: false, stale, message}; `stale` means the row changed since it was read.
+ * Saves `order` (titleIds) for `user`, sending each game's index as it was read and pinning the games in `pins`
+ * where they stand. Resolves to {ok: true} or {ok: false, stale, message}; `stale` means the row changed since it
+ * was read.
  */
-export async function save(user, order, games) {
-  const body = `LIN1\n${order.map(id => `${id} ${games[id].index}\n`).join('')}`;
+export async function save(user, order, games, pins) {
+  const body = `LIN1\n${order.map(id => `${id} ${games[id].index}${pins[id] ? ' pin' : ''}\n`).join('')}`;
   let reply;
   try {
     reply = await call(`/row?user=${user}`, {method: 'POST', body});
@@ -117,6 +122,16 @@ export async function save(user, order, games) {
   if (reply.status === 409) return {ok: false, stale: true, message: T.service.stale};
   const detail = reply.data.error ? ` (${reply.data.error})` : '';
   return {ok: false, stale: false, message: T.service.saveStatus(reply.status) + detail};
+}
+
+/** Removes every profile's pinned games and all Lineup added to the home screen database. Resolves to an error message or ''. */
+export async function unpinAll() {
+  try {
+    const reply = await call('/pins/uninstall', {method: 'POST', timeoutMs: 15000});
+    return reply.ok ? '' : T.pins.removeFailed(reply.data.error ?? T.service.status(reply.status));
+  } catch {
+    return T.pins.removeFailed(T.pins.noAnswer);
+  }
 }
 
 // ---- Updates ----

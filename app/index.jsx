@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Lineup reorders the PS5 home-screen game row. The lineupd service (payloads/lineupd.c) reads and
-// saves the row; this app draws it, lifts the focused game with X and carries it with the D-pad.
+// saves the row; this app draws it, lifts the focused game with X and carries it with the D-pad. Square pins
+// the focused game where it stands when the order is saved.
 //
 // Focus lives on invisible slots, one per position, laid out in a plain row so the focus manager moves
 // between them. The games are drawn apart, keyed by title, and only their transforms move: the focused
@@ -13,8 +14,8 @@ import {useInterfaceSounds} from './sounds.js';
 import * as api from './api.js';
 import {LANGUAGE, T} from './i18n.js';
 import {BOTTOM, DIGITS, EM, TOP} from './digits.js';
-import {Avatar, Badge, Button, C, Dialog, Hints, LiftLight, Mark, Message, Sheet, SheetItem, SheetRule, Toast, Wash,
-  px} from './ui.jsx';
+import {Avatar, Badge, Button, C, Dialog, Hints, LiftLight, Mark, Message, PinBadge, Sheet, SheetItem, SheetRule,
+  Toast, Wash, px} from './ui.jsx';
 
 const LEFT = 64;           // the focused game's left edge
 const BIG = 168;           // focused icon
@@ -35,7 +36,21 @@ const SPRING = {type: 'spring', stiffness: 420, damping: 40};
 const TILE = {...SPRING, opacity: {type: 'tween', duration: 0.14}};
 
 const sortKey = name => name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-const changed = s => s.order.reduce((count, id, i) => count + (s.home[id] !== i), 0);
+// Games moved or pinned/unpinned since the row was read. `pinned` maps the games read pinned to their slots.
+const changed = s => s.order.reduce((count, id, i) => count + (s.home[id] !== i || !s.pins[id] !== !(id in s.pinned)), 0);
+const allPinned = pinned => Object.fromEntries(Object.keys(pinned).map(id => [id, true]));
+
+// The order the pins ask for, as lineupd's triggers work it out: pinned games at their slots (packed at the end of
+// a row that got shorter), the others in their order in the free places.
+function pinnedOrder(order, pinned) {
+  const fixed = order.filter(id => id in pinned).sort((a, b) => pinned[a] - pinned[b]);
+  const at = {};
+  fixed.forEach((id, k) => {
+    at[Math.min(pinned[id], order.length - fixed.length + k)] = id;
+  });
+  const rest = order.filter(id => !(id in pinned));
+  return order.map((_, i) => at[i] ?? rest.shift());
+}
 
 const Slots = memo(function Slots({count, onFocusIndex, onPressIndex}) {
   const slots = [];
@@ -53,7 +68,7 @@ const Slots = memo(function Slots({count, onFocusIndex, onPressIndex}) {
 // row, and 168 px with its ring for focus. They swap with a short crossfade while scaling into each
 // other, so at rest neither is scaled or faded. Tiles sit at fixed places in a strip the row slides
 // as a whole, so a move re-renders only the games whose `place` changed.
-const Tile = memo(function Tile({game, index, place, lifted, moved}) {
+const Tile = memo(function Tile({game, index, place, lifted, moved, pinned}) {
   const focused = place === 'focus';
   const up = focused && lifted;
   const x = LEFT + index * STRIDE + (place === 'after' ? BIG - SMALL : 0);
@@ -72,6 +87,7 @@ const Tile = memo(function Tile({game, index, place, lifted, moved}) {
         <Image source={{uri}} className="absolute inset-0 rounded-[10px]" />
         <View className={place === 'before' ? 'absolute inset-0 rounded-[10px] bg-black/75'
           : 'absolute inset-0 rounded-[10px] bg-black/40'} />
+        {pinned ? <PinBadge /> : null}
       </motion.View>
       <motion.View className="absolute -left-2 -top-2 w-[184px] h-[184px] origin-top-left" initial={false}
         animate={{x: shiftX + PAD - PAD * scale, y: shiftY + PAD - PAD * scale, scale, opacity: focused ? 1 : 0}}
@@ -80,6 +96,7 @@ const Tile = memo(function Tile({game, index, place, lifted, moved}) {
           <Text className="font-inter text-small text-subtle line-clamp-3">{game.name}</Text>
         </View>
         <Image source={{uri}} className="absolute left-2 top-2 w-[168px] h-[168px] rounded-xl" />
+        {pinned ? <PinBadge big /> : null}
         {focused && !lifted ? <View className="absolute inset-0 rounded-[20px] border-[3px] border-fg" /> : null}
       </motion.View>
       {up ? (
@@ -109,7 +126,7 @@ function Row({s}) {
         const place = index < s.focus ? 'before' : index > s.focus ? 'after' : 'focus';
         return (
           <Tile key={id} game={s.games[id]} index={index} place={place} lifted={place === 'focus' && s.lifted}
-            moved={s.home[id] !== index} />
+            moved={s.home[id] !== index} pinned={!!s.pins[id]} />
         );
       })}
       {s.order.length > HOME_LIMIT ? (
@@ -125,12 +142,13 @@ function Row({s}) {
 const RAIL = 1152;
 
 // The whole row at a glance: a hairline ruler with a tick per game (when they fit), the moved games'
-// ticks in white and a marker on the focused one.
-const Ticks = memo(function Ticks({order, home}) {
+// ticks in white, the pinned ones as small white blocks, and a marker on the focused one.
+const Ticks = memo(function Ticks({order, home, pins}) {
   const at = i => Math.round(i * RAIL / Math.max(order.length - 1, 1));
   if (order.length > 96) return null;
-  const ticks = order.map((id, i) => (
-    <View key={id} className={home[id] === i ? 'absolute top-[5px] w-[2px] h-[6px] bg-dim'
+  const ticks = order.map((id, i) => (pins[id]
+    ? <View key={id} className="absolute top-[4px] w-[6px] h-[8px] rounded-[1px] bg-fg" style={{left: px(at(i) - 3)}} />
+    : <View key={id} className={home[id] === i ? 'absolute top-[5px] w-[2px] h-[6px] bg-dim'
       : 'absolute top-[3px] w-[2px] h-[10px] bg-fg'} style={{left: px(at(i) - 1)}} />
   ));
   // Where the home screen stops: a tall mark halfway between the last game it shows and the next.
@@ -146,7 +164,7 @@ function Rail({s}) {
   return (
     <View className="absolute left-16 top-[440px] w-[1152px] h-[16px]">
       <View className="absolute left-0 right-0 top-[7px] h-[2px] bg-line" />
-      <Ticks order={s.order} home={s.home} />
+      <Ticks order={s.order} home={s.home} pins={s.pins} />
       <motion.View className="absolute left-0 top-0 w-[6px] h-[16px] rounded-full bg-fg" initial={false}
         animate={{x: x - 3}} transition={SPRING} />
     </View>
@@ -178,6 +196,7 @@ function Position({s}) {
   const game = s.games[id];
   const was = s.home[id];
   const notes = [];
+  if (s.pins[id]) notes.push(T.pins.pinnedAt(s.focus + 1));
   if (was !== s.focus) notes.push(T.before(was + 1));
   if (s.focus >= HOME_LIMIT) notes.push(T.offHome);
   const note = notes.join(', ');
@@ -217,7 +236,7 @@ const LIFT_HINTS = [['dpad', H.move], ['cross', H.drop], ['circle', H.cancel]];
 const PICK_HINTS = [['cross', H.choose], ['circle', H.back]];
 
 const START = {phase: 'loading', step: T.service.looking, error: null, profiles: [], user: null,
-  games: {}, home: {}, base: [], order: [], focus: 0, dir: 1, lifted: false, liftFrom: 0, layer: null,
+  games: {}, home: {}, base: [], order: [], pins: {}, pinned: {}, focus: 0, dir: 1, lifted: false, liftFrom: 0, layer: null,
   target: null, toast: null, pending: null, progress: null, settings: null, update: null, install: null};
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -265,18 +284,21 @@ function App() {
   };
 
   const loadRow = async (user, profiles) => {
-    const list = await api.row(user);
+    const {games: list, pins} = await api.row(user);
     if (!list.length) throw new api.Problem(...T.emptyRow);
     const games = {};
     const home = {};
+    const pinned = {};
     list.forEach((game, i) => {
       games[game.titleId] = game;
       home[game.titleId] = i;
+      if (game.pinned !== null && game.pinned !== undefined) pinned[game.titleId] = game.pinned;
     });
     const base = list.map(game => game.titleId);
+    const missing = pins === 'missing';
     light(false);
-    patch({phase: 'row', profiles, user, games, home, base, order: base, focus: 0, dir: 1, lifted: false,
-      layer: null, target: null, pending: {index: 0}});
+    patch({phase: 'row', profiles, user, games, home, base, order: base, pins: allPinned(pinned), pinned, focus: 0,
+      dir: 1, lifted: false, layer: missing ? 'pinsMissing' : null, target: null, pending: missing ? null : {index: 0}});
   };
 
   const boot = async () => {
@@ -374,17 +396,17 @@ function App() {
     }
   };
 
-  // Saves, then shows the saved screen, or `next()` instead when switching profiles.
-  const save = async next => {
-    const now = ref.current;
-    if (!changed(now)) {
+  // Saves, then shows the saved screen, or `next()` instead when switching profiles. `force` saves an unchanged
+  // row too, to put the pins' triggers back.
+  const save = async (next, now = ref.current, force = false) => {
+    if (!changed(now) && !force) {
       close();
       toast(T.alreadySaved);
       return;
     }
     light(false);
     patch({lifted: false, layer: 'busy'});
-    const result = await api.save(now.user, now.order, now.games);
+    const result = await api.save(now.user, now.order, now.games, now.pins);
     if (result.ok) {
       if (next) {
         toast(T.savedToast);
@@ -443,12 +465,38 @@ function App() {
       save();
       return true;
     }
+    if (action === 'square') {
+      patch(p => {
+        const id = p.order[p.focus];
+        const pins = {...p.pins};
+        if (pins[id]) delete pins[id];
+        else pins[id] = true;
+        return {pins};
+      });
+      return true;
+    }
     return false;
   };
 
   const discard = () => {
-    patch(p => ({order: p.base, layer: null, pending: {index: 0}}));
+    patch(p => ({order: p.base, pins: allPinned(p.pinned), layer: null, pending: {index: 0}}));
     toast(T.discarded);
+  };
+  const pinAll = on => patch(p => ({pins: on ? Object.fromEntries(p.order.map(id => [id, true])) : {}, layer: null,
+    pending: {index: p.focus}}));
+  // Puts the games back at their slots and saves, which creates the triggers again.
+  const reapply = () => {
+    const now = ref.current;
+    const order = pinnedOrder(now.order, now.pinned);
+    patch({order});
+    save(null, {...now, order}, true);
+  };
+  const unpinEverywhere = async () => {
+    patch({layer: 'busy'});
+    const error = await api.unpinAll();
+    if (!error) patch({pins: {}, pinned: {}});
+    close();
+    toast(error || T.pins.removed);
   };
   const sortAZ = () => patch(p => {
     const id = p.order[p.focus];
@@ -509,7 +557,8 @@ function App() {
   }
 
   const count = changed(s);
-  const hints = s.layer ? PICK_HINTS : s.lifted ? LIFT_HINTS : ROW_HINTS;
+  const pinHint = ['square', s.pins[s.order[s.focus]] ? H.unpin : H.pin];
+  const hints = s.layer ? PICK_HINTS : s.lifted ? LIFT_HINTS : [ROW_HINTS[0], pinHint, ...ROW_HINTS.slice(1)];
   const settings = s.settings ?? {checkOnOpen: true, lastCheck: 0};
   const file = s.update?.[s.install?.kind === 'image' ? 'exfat' : 'zip'];
   const notes = [s.update?.notes?.[LANGUAGE] ?? s.update?.notes?.en, file?.size ? T.update.size(file.size) : '']
@@ -544,6 +593,8 @@ function App() {
               detail={T.menu.changes(count)} />,
             <SheetItem key="discard" label={T.menu.discard} onPress={discard} />,
             <SheetItem key="sort" label={T.menu.sort} onPress={sortAZ} />,
+            <SheetItem key="pin-all" label={T.pins.pinAll} onPress={() => pinAll(true)} />,
+            <SheetItem key="unpin-all" label={T.pins.unpinAll} onPress={() => pinAll(false)} />,
             <SheetRule key="rule" />,
             <SheetItem key="profiles" label={T.menu.profiles} onPress={() => patch({layer: 'profiles'})}
               detail={s.profiles.length > 1 ? T.menu.profileCount(s.profiles.length) : ''} />,
@@ -551,6 +602,7 @@ function App() {
               <SheetItem key="update" label={T.menu.updateTo(s.update.version)} onPress={() => patch({layer: 'update'})} />
             ) : null,
             <SheetItem key="updates" label={T.menu.updates} onPress={() => patch({layer: 'updates'})} />,
+            <SheetItem key="remove-pins" label={T.pins.removeAll} onPress={() => patch({layer: 'removePins'})} />,
           ] : s.profiles.map(item => (
             <SheetItem key={item.userId} label={item.name} checked={item.userId === s.user}
               leading={<Avatar profile={item} size={40} />}
@@ -584,6 +636,18 @@ function App() {
           onBack={() => patch({layer: 'updates'})}>
           <Button label={T.update.rollbackConfirm} onPress={() => runUpdate('previous')} />
           <Button label={T.update.cancel} onPress={() => patch({layer: 'updates'})} />
+        </Dialog>
+      ) : null}
+      {s.layer === 'removePins' ? (
+        <Dialog title={T.pins.removeTitle} body={T.pins.removeBody} onBack={() => patch({layer: 'menu'})}>
+          <Button label={T.pins.removeConfirm} onPress={unpinEverywhere} />
+          <Button label={T.pins.cancel} onPress={() => patch({layer: 'menu'})} />
+        </Dialog>
+      ) : null}
+      {s.layer === 'pinsMissing' ? (
+        <Dialog title={T.pins.missingTitle} body={T.pins.missingBody} onBack={close}>
+          <Button label={T.pins.reapply} onPress={reapply} />
+          <Button label={T.pins.later} onPress={close} />
         </Dialog>
       ) : null}
       {s.layer === 'busy' ? (

@@ -37,7 +37,22 @@ const en = {
   of: n => `of ${n}`,
   hints: {
     lift: 'Lift', save: 'Save', options: 'Options', quit: 'Quit', move: 'Move', drop: 'Drop',
-    cancel: 'Cancel', choose: 'Choose', back: 'Back', close: 'Close',
+    cancel: 'Cancel', choose: 'Choose', back: 'Back', close: 'Close', pin: 'Pin', unpin: 'Unpin',
+  },
+  pins: {
+    pinnedAt: n => `pinned at ${englishOrdinal(n)}`,
+    pinAll: 'Pin the whole row', unpinAll: 'Unpin all', removeAll: 'Remove pinned games from every profile',
+    removeTitle: 'Remove pinned games from every profile?',
+    removeBody: "Every profile goes back to the system's rule: the last game opened comes first. "
+      + 'The current order stays as it is.',
+    removeConfirm: 'Remove', cancel: 'Cancel',
+    removed: 'Pinned games removed from every profile.',
+    removeFailed: detail => `Could not remove the pinned games (${detail}).`,
+    noAnswer: 'the service did not answer',
+    missingTitle: 'The pinned games came loose',
+    missingBody: 'The home screen database was rebuilt or updated, so the games no longer hold their places. '
+      + 'Pin them again?',
+    reapply: 'Pin again', later: 'Not now',
   },
   saved: ['Order saved', 'Closing the app. The home screen comes back with the new order.'],
   closeNow: 'Close now',
@@ -86,7 +101,7 @@ const en = {
   profilesSubtitle: 'Each profile has its own row',
   exitDialog: {
     title: 'Save the new order before leaving?',
-    body: n => (n === 1 ? 'One game moved.' : `${n} games moved.`),
+    body: n => (n === 1 ? 'One game changed.' : `${n} games changed.`),
     save: 'Save and quit', discard: 'Quit without saving', back: 'Back',
   },
   switchDialog: {
@@ -124,7 +139,22 @@ const pt = {
   of: n => `de ${n}`,
   hints: {
     lift: 'Levantar', save: 'Salvar', options: 'Opções', quit: 'Sair', move: 'Mover', drop: 'Soltar',
-    cancel: 'Cancelar', choose: 'Escolher', back: 'Voltar', close: 'Fechar',
+    cancel: 'Cancelar', choose: 'Escolher', back: 'Voltar', close: 'Fechar', pin: 'Fixar', unpin: 'Desafixar',
+  },
+  pins: {
+    pinnedAt: n => `fixo no ${n}º`,
+    pinAll: 'Fixar toda a fileira', unpinAll: 'Desafixar todos', removeAll: 'Remover jogos fixos de todos os perfis',
+    removeTitle: 'Remover os jogos fixos de todos os perfis?',
+    removeBody: 'Todos os perfis voltam à regra do sistema: o último jogo aberto vai para a frente. '
+      + 'A ordem atual continua como está.',
+    removeConfirm: 'Remover', cancel: 'Cancelar',
+    removed: 'Jogos fixos removidos de todos os perfis.',
+    removeFailed: detail => `Não consegui remover os jogos fixos (${detail}).`,
+    noAnswer: 'o serviço não respondeu',
+    missingTitle: 'Os jogos fixos se soltaram',
+    missingBody: 'O banco de dados da tela inicial foi reconstruído ou atualizado, e os jogos não seguram mais o '
+      + 'lugar. Fixar de novo?',
+    reapply: 'Fixar de novo', later: 'Agora não',
   },
   saved: ['Ordem salva', 'Fechando o app. A tela inicial já volta com a nova ordem.'],
   closeNow: 'Fechar agora',
@@ -173,7 +203,7 @@ const pt = {
   profilesSubtitle: 'Cada perfil tem a sua fileira',
   exitDialog: {
     title: 'Salvar a nova ordem antes de sair?',
-    body: n => (n === 1 ? 'Um jogo mudou de lugar.' : `${n} jogos mudaram de lugar.`),
+    body: n => (n === 1 ? 'Um jogo mudou.' : `${n} jogos mudaram.`),
     save: 'Salvar e sair', discard: 'Sair sem salvar', back: 'Voltar',
   },
   switchDialog: {
