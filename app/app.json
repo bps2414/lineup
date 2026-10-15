@@ -1,0 +1,19 @@
+{
+  "$schema": "../../app.schema.json",
+  "titleId": "PPSA99077",
+  "contentId": "UP9000-PPSA99077_00-FILEIRA000000000",
+  "name": "Fileira",
+  "version": "01.000.000",
+  "render": {
+    "width": 1920,
+    "height": 1080
+  },
+  "surface": {
+    "width": 1920,
+    "height": 1080
+  },
+  "refreshRate": 60,
+  "timeoutSeconds": 0,
+  "networking": true,
+  "filesystemAccess": "console"
+}

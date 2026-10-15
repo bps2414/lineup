@@ -1,0 +1,4 @@
+[submodule "ps5-react"]
+	path = ps5-react
+	url = ../ps5-react
+	branch = app-payloads
