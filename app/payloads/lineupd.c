@@ -9,11 +9,14 @@
 // Endpoints (JSON unless noted), on 127.0.0.1:9077 (0.0.0.0 when built with -DLINEUPD_LAN):
 //   GET  /version                {"version"}
 //   GET  /profiles                 {"profiles":[{"userId","hex","name","avatar"}]}
-//   GET  /row?user=<10 dig>  {"user","games":[{"titleId","name","index","icon"}]}
+//   GET  /row?user=<10 dig>  {"user","pins":"on"|"missing"|"off","games":[{"titleId","name","index","icon",
+//                                "pinned":slot|null}]}
 //   GET  /icon/<titleId>         image/png
 //   GET  /avatar/<10 dig>        image/png, the profile's picture
-//   POST /row?user=<10 dig>  X-Lineup: 1; body "LIN1\n" then "<titleId> <index>\n" per game,
-//                                in the new order, with the index the client read
+//   POST /row?user=<10 dig>  X-Lineup: 1; body "LIN1\n" then "<titleId> <index>[ pin]\n" per game,
+//                                in the new order, with the index the client read; " pin" pins it at that place
+//   POST /pins/off?user=<10 dig> X-Lineup: 1; unpins that profile's games
+//   POST /pins/uninstall         X-Lineup: 1; removes every pin, trigger and table Lineup added to app.db
 //   POST /quit                   X-Lineup: 1; exits after answering
 //   GET  /update/install         X-Lineup: 1; {"kind":"folder"|"image","path","previous"}
 //   POST /update/apply?version=<x.y.z|previous>  X-Lineup: 1; answers, waits for the app to close, swaps its
@@ -56,7 +59,7 @@
 #define LOG(fmt, ...) klog_printf("[lineupd] " fmt "\n", ##__VA_ARGS__)
 #endif
 
-#define LINEUPD_VERSION "1.2.0"
+#define LINEUPD_VERSION "1.3.0"
 #define TITLE_ID "PPSA99077"
 #ifdef LINEUPD_DIAG
 // Phase 0 diagnostic build (docs/pt-BR/PLANO-1.2.md): its own port, open to the LAN, so it runs beside the
@@ -134,7 +137,7 @@ static int is_title_id(const char* id) {
 
 // ---- Reorder logic (pure) ----
 
-typedef struct { char title[16]; long long index; } Row;
+typedef struct { char title[16]; long long index; int pinned; } Row;
 
 static int by_index_descending(const void* a, const void* b) {
   long long x = *(const long long*)a, y = *(const long long*)b;
@@ -157,7 +160,7 @@ static int plan_reorder(const Row* current, int count, const Row* posted, int po
   return 0;
 }
 
-// Parses "LIN1\n" + "<titleId> <index>\n" lines. Returns the number of rows, or -1.
+// Parses "LIN1\n" + "<titleId> <index>[ pin]\n" lines. Returns the number of rows, or -1.
 static int parse_order(const char* body, Row* rows, int capacity) {
   if (strncmp(body, "LIN1\n", 5)) return -1;
   int count = 0;
@@ -169,11 +172,12 @@ static int parse_order(const char* body, Row* rows, int capacity) {
       if (length >= sizeof text || count == capacity) return -1;
       memcpy(text, line, length);
       text[length] = 0;
-      char title[16];
+      char title[16], flag[8], extra;
       long long index;
-      char extra;
-      if (sscanf(text, "%15s %lld %c", title, &index, &extra) != 2 || !is_title_id(title)) return -1;
+      int fields = sscanf(text, "%15s %lld %7s %c", title, &index, flag, &extra);
+      if (fields < 2 || fields > 3 || (fields == 3 && strcmp(flag, "pin")) || !is_title_id(title)) return -1;
       strcpy(rows[count].title, title);
+      rows[count].pinned = fields == 3;
       rows[count++].index = index;
     }
     if (!end) break;
@@ -195,15 +199,20 @@ static sqlite3* open_db(int writable) {
   return db;
 }
 
-static int table_exists(sqlite3* db, const char* user) {
-  char name[64];
-  snprintf(name, sizeof name, "tbl_iconinfo_%s", user);
+// Whether the schema has a table or trigger named `name`.
+static int has_object(sqlite3* db, const char* name) {
   sqlite3_stmt* statement;
-  if (sqlite3_prepare_v2(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", -1, &statement, NULL)) return 0;
+  if (sqlite3_prepare_v2(db, "SELECT 1 FROM sqlite_master WHERE name=?", -1, &statement, NULL)) return 0;
   sqlite3_bind_text(statement, 1, name, -1, SQLITE_STATIC);
   int exists = sqlite3_step(statement) == SQLITE_ROW;
   sqlite3_finalize(statement);
   return exists;
+}
+
+static int table_exists(sqlite3* db, const char* user) {
+  char name[64];
+  snprintf(name, sizeof name, "tbl_iconinfo_%s", user);
+  return has_object(db, name);
 }
 
 // `user` must already be validated: table names cannot be bound.
@@ -219,6 +228,7 @@ static int read_row(sqlite3* db, const char* user, Row* rows, char (*names)[256]
     const char* name = (const char*)sqlite3_column_text(statement, 1);
     snprintf(rows[count].title, sizeof rows[count].title, "%s", title ? title : "");
     if (names) snprintf(names[count], sizeof names[count], "%s", name && *name ? name : rows[count].title);
+    rows[count].pinned = 0;
     rows[count++].index = sqlite3_column_int64(statement, 2);
   }
   sqlite3_finalize(statement);
@@ -302,6 +312,185 @@ static int check_and_backup(sqlite3* db, char* backup, size_t backup_size, char*
   return 0;
 }
 
+// ---- Pinned games ----
+//
+// A pinned game keeps its place when the system moves games: three triggers on tbl_iconinfo_<user>
+// (lineup_pin_u_, _i_ and _d_<user>) run REORDER inside the system's own write, so the home screen rereads a row
+// already in the pinned order. lineup_pin holds the slots, lineup_seq is 0..MAX_GAMES-1 (to find the k-th free
+// place) and lineup_tmp is REORDER's scratch table, empty between writes.
+
+#define PINNED "SELECT titleId FROM lineup_pin WHERE user = '%1$s'"
+
+// In SQL the home screen's SQLite reads: no CTEs (not allowed in triggers anyway), window functions, UPSERT or
+// RETURNING. %1$s is the user. In lineup_tmp, v is a game's index, r the place it gets and nv that place's index
+// (before that, for a game that is not pinned, how many of those were used after it).
+// ponytail: places stop at MAX_GAMES; a game past them gets no place and keeps its index.
+#define REORDER \
+  /* The row as it is now. */ \
+  "INSERT OR IGNORE INTO lineup_tmp (titleId, v) SELECT titleId, lastAccessIndex FROM tbl_iconinfo_%1$s " \
+  "WHERE visible = 1 AND dispLocation = 138;" \
+  /* A pinned game keeps its slot; pinned past the end of a shorter row, they pack at its end in slot order. */ \
+  "UPDATE lineup_tmp SET r = (SELECT MIN(p.slot, (SELECT COUNT(*) FROM lineup_tmp) - 1 - (SELECT COUNT(*) " \
+  "FROM lineup_pin q, lineup_tmp t WHERE q.user = p.user AND t.titleId = q.titleId AND q.slot > p.slot)) " \
+  "FROM lineup_pin p WHERE p.user = '%1$s' AND p.titleId = lineup_tmp.titleId) WHERE titleId IN (" PINNED ");" \
+  /* The others take the free places by how recently they were used, as the system orders them. */ \
+  "UPDATE lineup_tmp SET nv = (SELECT COUNT(*) FROM lineup_tmp o WHERE o.titleId NOT IN (" PINNED ") AND " \
+  "(o.v > lineup_tmp.v OR (o.v = lineup_tmp.v AND o.titleId < lineup_tmp.titleId))) WHERE titleId NOT IN (" PINNED ");" \
+  "UPDATE lineup_tmp SET r = (SELECT MIN(s.i) FROM lineup_seq s WHERE s.i < (SELECT COUNT(*) FROM lineup_tmp) AND " \
+  "s.i NOT IN (SELECT t.r FROM lineup_tmp t WHERE t.titleId IN (" PINNED ")) AND s.i - (SELECT COUNT(*) " \
+  "FROM lineup_tmp t WHERE t.titleId IN (" PINNED ") AND t.r < s.i) = lineup_tmp.nv) WHERE titleId NOT IN (" PINNED ");" \
+  /* Place r gets the r-th largest index the row already has, as in save_order. */ \
+  "UPDATE lineup_tmp SET nv = (SELECT a.v FROM lineup_tmp a WHERE (SELECT COUNT(*) FROM lineup_tmp b " \
+  "WHERE b.v > a.v OR (b.v = a.v AND b.titleId < a.titleId)) = lineup_tmp.r);" \
+  "UPDATE tbl_iconinfo_%1$s SET lastAccessIndex = (SELECT t.nv FROM lineup_tmp t WHERE t.titleId = " \
+  "tbl_iconinfo_%1$s.titleId) WHERE visible = 1 AND dispLocation = 138 AND titleId IN " \
+  "(SELECT titleId FROM lineup_tmp WHERE nv <> v);" \
+  "DELETE FROM lineup_tmp;"
+
+// Opening a game raises its index (twice, a few seconds apart); installing inserts and uninstalling deletes a row.
+// recursive_triggers is off by default, so REORDER's own UPDATE does not fire them again; a non-empty lineup_tmp
+// stops them too, should it be on.
+#define PIN_TRIGGER(kind, event, when) \
+  "CREATE TRIGGER lineup_pin_" kind "_%1$s AFTER " event " ON tbl_iconinfo_%1$s WHEN " when \
+  "NOT EXISTS (SELECT 1 FROM lineup_tmp) BEGIN " REORDER " END;"
+#define PIN_TRIGGERS \
+  PIN_TRIGGER("u", "UPDATE OF lastAccessIndex", "NEW.lastAccessIndex > OLD.lastAccessIndex AND ") \
+  PIN_TRIGGER("i", "INSERT", "") PIN_TRIGGER("d", "DELETE", "")
+
+static int drop_pin_triggers(sqlite3* db, const char* user) {
+  char sql[256];
+  snprintf(sql, sizeof sql, "DROP TRIGGER IF EXISTS lineup_pin_u_%1$s; DROP TRIGGER IF EXISTS lineup_pin_i_%1$s;"
+           "DROP TRIGGER IF EXISTS lineup_pin_d_%1$s;", user);
+  return sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+// Removes everything Lineup adds to app.db: every profile's triggers and the three tables.
+static int remove_pins(sqlite3* db) {
+  static char names[MAX_GAMES][64];
+  int count = 0;
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB 'lineup_pin_[uid]_*'",
+                         -1, &statement, NULL) != SQLITE_OK) return -1;
+  while (count < MAX_GAMES && sqlite3_step(statement) == SQLITE_ROW)
+    snprintf(names[count++], sizeof names[0], "%s", (const char*)sqlite3_column_text(statement, 0));
+  sqlite3_finalize(statement);
+  for (int i = 0; i < count; ++i) {
+    char sql[128];
+    snprintf(sql, sizeof sql, "DROP TRIGGER \"%s\"", names[i]);
+    if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
+  }
+  return sqlite3_exec(db, "DROP TABLE IF EXISTS lineup_pin; DROP TABLE IF EXISTS lineup_seq; DROP TABLE IF EXISTS lineup_tmp;",
+                      NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+static int forget_pins(sqlite3* db, const char* user) {
+  if (!has_object(db, "lineup_pin")) return 0;
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "DELETE FROM lineup_pin WHERE user = ?", -1, &statement, NULL) != SQLITE_OK) return -1;
+  sqlite3_bind_text(statement, 1, user, -1, SQLITE_STATIC);
+  int failed = sqlite3_step(statement) != SQLITE_DONE;
+  sqlite3_finalize(statement);
+  return failed ? -1 : 0;
+}
+
+// Once no profile has a pinned game, nothing of Lineup's stays in app.db.
+static int remove_pins_if_unused(sqlite3* db) {
+  if (has_object(db, "lineup_pin")) {
+    sqlite3_stmt* statement;
+    if (sqlite3_prepare_v2(db, "SELECT 1 FROM lineup_pin LIMIT 1", -1, &statement, NULL) != SQLITE_OK) return -1;
+    int used = sqlite3_step(statement) == SQLITE_ROW;
+    sqlite3_finalize(statement);
+    if (used) return 0;
+  }
+  return remove_pins(db);
+}
+
+// Inside save_order's transaction, after its triggers were dropped: records the posted games that are pinned, at
+// their posted places, and creates the triggers again when there are any.
+static int save_pins(sqlite3* db, const char* user, const Row* posted, int count) {
+  int pins = 0;
+  for (int i = 0; i < count; ++i) pins += posted[i].pinned;
+  if (forget_pins(db, user)) return -1;
+  if (!pins) return remove_pins_if_unused(db);
+  if (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS lineup_pin (user TEXT, titleId TEXT, slot INTEGER, PRIMARY KEY (user, titleId));"
+                   "CREATE TABLE IF NOT EXISTS lineup_seq (i INTEGER PRIMARY KEY);"
+                   "CREATE TABLE IF NOT EXISTS lineup_tmp (titleId TEXT PRIMARY KEY, v INTEGER, r INTEGER, nv INTEGER);",
+                   NULL, NULL, NULL) != SQLITE_OK) return -1;
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "INSERT OR IGNORE INTO lineup_seq VALUES (?)", -1, &statement, NULL) != SQLITE_OK) return -1;
+  int failed = 0;
+  for (int i = 0; !failed && i < MAX_GAMES; ++i) {
+    sqlite3_bind_int(statement, 1, i);
+    failed = sqlite3_step(statement) != SQLITE_DONE;
+    sqlite3_reset(statement);
+  }
+  sqlite3_finalize(statement);
+  if (failed || sqlite3_prepare_v2(db, "INSERT INTO lineup_pin VALUES (?, ?, ?)", -1, &statement, NULL) != SQLITE_OK) return -1;
+  for (int i = 0; !failed && i < count; ++i) {
+    if (!posted[i].pinned) continue;
+    sqlite3_bind_text(statement, 1, user, -1, SQLITE_STATIC);
+    sqlite3_bind_text(statement, 2, posted[i].title, -1, SQLITE_STATIC);
+    sqlite3_bind_int(statement, 3, i);
+    failed = sqlite3_step(statement) != SQLITE_DONE;
+    sqlite3_reset(statement);
+  }
+  sqlite3_finalize(statement);
+  static char sql[16 * 1024];
+  return failed || snprintf(sql, sizeof sql, PIN_TRIGGERS, user) >= (int)sizeof sql ||
+         sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK ? -1 : 0;
+}
+
+// Each of `rows`' pinned slot in `slots`, -1 when it is not pinned. Returns "on", "missing" (pinned games without
+// their triggers, as after the database is rebuilt) or "off".
+static const char* read_pins(sqlite3* db, const char* user, const Row* rows, int count, int* slots) {
+  for (int i = 0; i < count; ++i) slots[i] = -1;
+  sqlite3_stmt* statement;
+  if (!has_object(db, "lineup_pin") ||
+      sqlite3_prepare_v2(db, "SELECT titleId, slot FROM lineup_pin WHERE user = ?", -1, &statement, NULL) != SQLITE_OK)
+    return "off";
+  sqlite3_bind_text(statement, 1, user, -1, SQLITE_STATIC);
+  int any = 0;
+  for (; sqlite3_step(statement) == SQLITE_ROW; any = 1) {
+    const char* title = (const char*)sqlite3_column_text(statement, 0);
+    for (int i = 0; title && i < count; ++i)
+      if (!strcmp(rows[i].title, title)) slots[i] = sqlite3_column_int(statement, 1);
+  }
+  sqlite3_finalize(statement);
+  if (!any) return "off";
+  for (const char* kind = "uid"; *kind; ++kind) {
+    char name[64];
+    snprintf(name, sizeof name, "lineup_pin_%c_%s", *kind, user);
+    if (!has_object(db, name)) return "missing";
+  }
+  return "on";
+}
+
+// Unpins every game of `user` (/pins/off), or of every profile when `user` is NULL (/pins/uninstall), after a
+// backup. Returns the HTTP status; `message` explains a failure.
+static int unpin(const char* user, char* backup, size_t backup_size, char* message, size_t message_size) {
+  sqlite3* db = open_db(1);
+  if (!db) { snprintf(message, message_size, "Could not open the home screen database."); return 500; }
+  int status = 500;
+  if (user && !table_exists(db, user)) { snprintf(message, message_size, "No such profile."); status = 404; goto done; }
+  // Nothing to remove: no backup either.
+  if (user && !has_object(db, "lineup_pin")) { status = 200; goto done; }
+  if (check_and_backup(db, backup, backup_size, message, message_size)) goto done;
+  if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+    snprintf(message, message_size, "The database is busy (%s). Try again.", sqlite3_errmsg(db));
+    goto done;
+  }
+  if ((user ? drop_pin_triggers(db, user) || forget_pins(db, user) || remove_pins_if_unused(db) : remove_pins(db)) ||
+      sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+    snprintf(message, message_size, "The write failed (%s). Nothing changed.", sqlite3_errmsg(db));
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    goto done;
+  }
+  status = 200;
+done:
+  sqlite3_close(db);
+  return status;
+}
+
 // Saves `posted` as the new order. Returns the HTTP status; `message` explains a failure.
 static int save_order(const char* user, const Row* posted, int posted_count, char* backup, size_t backup_size,
                       char* integrity, size_t integrity_size, char* message, size_t message_size) {
@@ -326,14 +515,16 @@ static int save_order(const char* user, const Row* posted, int posted_count, cha
   {
     char sql[128];
     snprintf(sql, sizeof sql, "UPDATE tbl_iconinfo_%s SET lastAccessIndex = ? WHERE titleId = ?", user);
-    sqlite3_stmt* update;
-    int failed = sqlite3_prepare_v2(db, sql, -1, &update, NULL) != SQLITE_OK;
+    sqlite3_stmt* update = NULL;
+    // The pin triggers go first, or these writes would fire them.
+    int failed = drop_pin_triggers(db, user) || sqlite3_prepare_v2(db, sql, -1, &update, NULL) != SQLITE_OK;
     for (int i = 0; !failed && i < posted_count; ++i) {
       sqlite3_bind_int64(update, 1, indices[i]);
       sqlite3_bind_text(update, 2, posted[i].title, -1, SQLITE_STATIC);
       failed = sqlite3_step(update) != SQLITE_DONE || sqlite3_changes(db) != 1;
       sqlite3_reset(update);
     }
+    if (!failed) failed = save_pins(db, user, posted, posted_count);
     if (failed) snprintf(message, message_size, "The write failed (%s). Nothing changed.", sqlite3_errmsg(db));
     sqlite3_finalize(update);
     if (failed || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
@@ -619,24 +810,28 @@ static void get_row(int socket, const char* user) {
   if (!table_exists(db, user)) { sqlite3_close(db); respond_error(socket, 404, "No such profile."); return; }
   int count = read_row(db, user, rows, names, MAX_GAMES);
   static long long icons[MAX_GAMES];
+  static int slots[MAX_GAMES];
   for (int i = 0; i < count; ++i) {
     char path[256];
     struct stat info;
     icon_path(db, rows[i].title, path, sizeof path);
     icons[i] = stat(path, &info) ? 0 : (long long)info.st_mtime;
   }
+  const char* pins = read_pins(db, user, rows, count < 0 ? 0 : count, slots);
   sqlite3_close(db);
   if (count < 0) { respond_error(socket, 500, "Could not read the row."); return; }
   Buffer body = {0};
   puts_(&body, "{\"user\":");
   put_json_string(&body, user);
-  puts_(&body, ",\"games\":[");
+  putf(&body, ",\"pins\":\"%s\",\"games\":[", pins);
   for (int i = 0; i < count; ++i) {
     puts_(&body, i ? ",{\"titleId\":" : "{\"titleId\":");
     put_json_string(&body, rows[i].title);
     puts_(&body, ",\"name\":");
     put_json_string(&body, names[i]);
-    putf(&body, ",\"index\":%lld,\"icon\":%lld}", rows[i].index, icons[i]);
+    putf(&body, ",\"index\":%lld,\"icon\":%lld", rows[i].index, icons[i]);
+    if (slots[i] < 0) puts_(&body, ",\"pinned\":null}");
+    else putf(&body, ",\"pinned\":%d}", slots[i]);
   }
   puts_(&body, "]}");
   respond_json(socket, 200, &body);
@@ -691,6 +886,19 @@ static void post_row(int socket, const char* user, const char* body) {
   put_json_string(&reply, backup);
   puts_(&reply, ",\"integrity\":");
   put_json_string(&reply, integrity);
+  puts_(&reply, "}");
+  respond_json(socket, 200, &reply);
+  free(reply.data);
+}
+
+static void post_unpin(int socket, const char* user) {
+  char backup[256] = "", message[300] = "";
+  int status = unpin(user, backup, sizeof backup, message, sizeof message);
+  if (status != 200) { respond_error(socket, status, message); return; }
+  LOG("pins off for %s, backup %s", user ? user : "every profile", backup);
+  Buffer reply = {0};
+  puts_(&reply, "{\"ok\":true,\"backup\":");
+  put_json_string(&reply, backup);
   puts_(&reply, "}");
   respond_json(socket, 200, &reply);
   free(reply.data);
@@ -1283,6 +1491,12 @@ static int handle(int socket) {
     else if (get) get_row(socket, user);
     else if (!authorized) respond_error(socket, 403, "Missing the X-Lineup header.");
     else post_row(socket, user, body);
+  } else if (post && !strncmp(target, "/pins/", 6)) {
+    if (!authorized) respond_error(socket, 403, "Missing the X-Lineup header.");
+    else if (!strcmp(target, "/pins/uninstall")) post_unpin(socket, NULL);
+    else if (strcmp(target, "/pins/off")) respond_error(socket, 404, "Unknown route.");
+    else if (!query_value(query, "user", user, sizeof user) || !is_user_id(user)) respond_error(socket, 400, "user must be 10 digits.");
+    else post_unpin(socket, user);
   } else if (get && !strncmp(target, "/icon/", 6)) {
     get_icon(socket, target + 6);
   } else if (get && !strncmp(target, "/avatar/", 8)) {
@@ -1356,22 +1570,156 @@ int main(void) {
 
 #else
 
+static long long given;  // the largest index the simulated system gave
+
+static long long scalar(const char* sql) {
+  sqlite3* db = open_db(0);
+  sqlite3_stmt* statement;
+  assert(db && sqlite3_prepare_v2(db, sql, -1, &statement, NULL) == SQLITE_OK && sqlite3_step(statement) == SQLITE_ROW);
+  long long value = sqlite3_column_int64(statement, 0);
+  sqlite3_finalize(statement);
+  sqlite3_close(db);
+  return value;
+}
+
+// Runs `format` (a statement, %1$s the user and %2$s a title) as the system would, outside Lineup.
+static void run(const char* format, const char* user, const char* title) {
+  char sql[512];
+  snprintf(sql, sizeof sql, format, user, title);
+  sqlite3* db = open_db(1);
+  assert(db && sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK);
+  sqlite3_close(db);
+}
+
+// What the console does when a game opens: two raises to its counter plus one, a few seconds apart, between writes
+// that leave the index alone.
+static void open_game(const char* user, const char* title) {
+  for (int i = 0; i < 2; ++i) {
+    char sql[128];
+    snprintf(sql, sizeof sql, "SELECT MAX(lastAccessIndex) FROM tbl_iconinfo_%s", user);
+    given = scalar(sql) + 1;
+    snprintf(sql, sizeof sql, "UPDATE tbl_iconinfo_%%1$s SET lastAccessIndex = %lld WHERE titleId = '%%2$s'", given);
+    run(sql, user, title);
+    run("UPDATE tbl_iconinfo_%1$s SET titleName = titleName WHERE titleId = '%2$s'", user, title);
+  }
+}
+
+// Checks the row against `expected`, the games' last digits from first to last, and that no index went past
+// the largest the system gave.
+static void expect_row(const char* user, const char* expected) {
+  static Row rows[MAX_GAMES];
+  sqlite3* db = open_db(0);
+  int count = read_row(db, user, rows, NULL, MAX_GAMES);
+  sqlite3_close(db);
+  char got[MAX_GAMES + 1];
+  for (int i = 0; i < count; ++i) got[i] = rows[i].title[8];
+  got[count] = 0;
+  if (strcmp(got, expected)) { fprintf(stderr, "row %s, expected %s\n", got, expected); exit(1); }
+  for (int i = 1; i < count; ++i) assert(rows[i].index < rows[i - 1].index);
+  assert(rows[0].index <= given);
+}
+
+// Saves the row in `order` (last digits), pinning the games in `pins` at their places.
+static void save_digits(const char* user, const char* order, const char* pins) {
+  static Row current[MAX_GAMES], posted[MAX_GAMES];
+  sqlite3* db = open_db(0);
+  int count = read_row(db, user, current, NULL, MAX_GAMES);
+  sqlite3_close(db);
+  assert(count == (int)strlen(order));
+  for (int i = 0; i < count; ++i)
+    for (int j = 0; j < count; ++j)
+      if (current[j].title[8] == order[i]) { posted[i] = current[j]; posted[i].pinned = strchr(pins, order[i]) != NULL; }
+  char backup[256], integrity[256], message[300];
+  int status = save_order(user, posted, count, backup, sizeof backup, integrity, sizeof integrity, message, sizeof message);
+  if (status != 200) { fprintf(stderr, "%d %s\n", status, message); exit(1); }
+}
+
+static const char* pins_of(const char* user, int* slots) {
+  static Row rows[MAX_GAMES];
+  sqlite3* db = open_db(0);
+  int count = read_row(db, user, rows, NULL, MAX_GAMES);
+  const char* state = read_pins(db, user, rows, count, slots);
+  sqlite3_close(db);
+  return state;
+}
+
+// Pinned games on the synthetic database: games 1 to 5 of user 1, in that order.
+static void test_pins(void) {
+  const char* one = "0000000001";
+  int slots[MAX_GAMES];
+  given = scalar("SELECT MAX(lastAccessIndex) FROM tbl_iconinfo_0000000001");
+  save_digits(one, "31254", "35");
+  expect_row(one, "31254");
+  assert(!strcmp(pins_of(one, slots), "on") && slots[0] == 0 && slots[1] < 0 && slots[3] == 3);
+  // Opening games: the others take the free places by how recently they were used.
+  open_game(one, "PPSA00004");
+  expect_row(one, "34152");
+  open_game(one, "PPSA00002");
+  expect_row(one, "32451");
+  open_game(one, "PPSA00005");
+  expect_row(one, "32451");
+  // Installing: the new game takes the first free place.
+  given = scalar("SELECT MAX(lastAccessIndex) FROM tbl_iconinfo_0000000001") + 1;
+  char sql[256];
+  snprintf(sql, sizeof sql, "INSERT INTO tbl_iconinfo_%%1$s VALUES ('%%2$s','Seven',%lld,1,138)", given);
+  run(sql, one, "PPSA00007");
+  expect_row(one, "372541");
+  // Uninstalling: a game pinned past the end of the shorter row goes last.
+  run("DELETE FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", one, "PPSA00007");
+  run("DELETE FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", one, "PPSA00004");
+  expect_row(one, "3215");
+  run("DELETE FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", one, "PPSA00001");
+  expect_row(one, "325");
+  // Saving again moves a pinned game and keeps it pinned at its new place.
+  save_digits(one, "235", "35");
+  open_game(one, "PPSA00005");
+  expect_row(one, "235");
+  open_game(one, "PPSA00002");
+  expect_row(one, "235");
+  assert(!strcmp(pins_of(one, slots), "on") && slots[1] == 1 && slots[0] < 0 && slots[2] == 2);
+  // Without its triggers (a rebuilt database), the pins show as missing.
+  run("DROP TRIGGER lineup_pin_d_%1$s", one, "");
+  assert(!strcmp(pins_of(one, slots), "missing"));
+
+  // /pins/off: the profile's pins and, the last ones gone, every lineup_* object; the system's order is back.
+  char backup[256], message[300];
+  assert(unpin(one, backup, sizeof backup, message, sizeof message) == 200);
+  assert(!strcmp(pins_of(one, slots), "off") && !scalar("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'lineup%'"));
+  open_game(one, "PPSA00005");
+  expect_row(one, "523");
+
+  // /pins/uninstall with two profiles pinned.
+  const char* two = "0000000002";
+  run("CREATE TABLE tbl_iconinfo_%1$s (titleId TEXT, titleName TEXT, lastAccessIndex INTEGER, visible INTEGER, "
+      "dispLocation INTEGER); INSERT INTO tbl_iconinfo_%1$s VALUES ('PPSA00008','Eight',2,1,138),('PPSA00009','Nine',1,1,138)",
+      two, "");
+  save_digits(one, "523", "2");
+  save_digits(two, "98", "8");
+  assert(unpin(one, backup, sizeof backup, message, sizeof message) == 200);
+  assert(!strcmp(pins_of(two, slots), "on") && scalar("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'lineup%'") == 6);
+  save_digits(one, "523", "2");
+  assert(unpin(NULL, backup, sizeof backup, message, sizeof message) == 200);
+  assert(!strcmp(pins_of(one, slots), "off") && !strcmp(pins_of(two, slots), "off"));
+  assert(!scalar("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'lineup%'"));
+}
+
 // Self-check: lineupd-test [<copy of app.db> <userId>]. Reorders the copy (or a synthetic database), checks it,
 // restores it.
 int main(int argc, char** argv) {
-  Row current[3] = {{"PPSA00001", 30}, {"PPSA00002", 20}, {"PPSA00003", 10}};
-  Row posted[3] = {{"PPSA00003", 10}, {"PPSA00001", 30}, {"PPSA00002", 20}};
+  Row current[3] = {{"PPSA00001", 30, 0}, {"PPSA00002", 20, 0}, {"PPSA00003", 10, 0}};
+  Row posted[3] = {{"PPSA00003", 10, 0}, {"PPSA00001", 30, 0}, {"PPSA00002", 20, 0}};
   long long out[3];
   assert(!plan_reorder(current, 3, posted, 3, out) && out[0] == 30 && out[1] == 20 && out[2] == 10);
-  Row stale[3] = {{"PPSA00003", 11}, {"PPSA00001", 30}, {"PPSA00002", 20}};
+  Row stale[3] = {{"PPSA00003", 11, 0}, {"PPSA00001", 30, 0}, {"PPSA00002", 20, 0}};
   assert(plan_reorder(current, 3, stale, 3, out));
-  Row duplicate[3] = {{"PPSA00001", 30}, {"PPSA00001", 30}, {"PPSA00002", 20}};
+  Row duplicate[3] = {{"PPSA00001", 30, 0}, {"PPSA00001", 30, 0}, {"PPSA00002", 20, 0}};
   assert(plan_reorder(current, 3, duplicate, 3, out));
   assert(plan_reorder(current, 3, posted, 2, out));
   Row parsed[4];
   assert(parse_order("LIN1\nPPSA00003 10\nPPSA00001 30\n", parsed, 4) == 2 && parsed[1].index == 30);
   assert(parse_order("LIN1\nPPSA0003 10\n", parsed, 4) < 0 && parse_order("XXX\n", parsed, 4) < 0);
-  assert(parse_order("LIN1\nPPSA00003 10 x\n", parsed, 4) < 0);
+  assert(parse_order("LIN1\nPPSA00003 10 x\n", parsed, 4) < 0 && parse_order("LIN1\nPPSA00003 10 pin x\n", parsed, 4) < 0);
+  assert(parse_order("LIN1\nPPSA00003 10 pin\nPPSA00001 30\n", parsed, 4) == 2 && parsed[0].pinned && !parsed[1].pinned);
 
   // Without a copy of app.db, a synthetic one: five games on the row and one hidden.
   const char* user = argc >= 3 ? argv[2] : "0000000001";
@@ -1413,6 +1761,7 @@ int main(int argc, char** argv) {
   read_row(db, user, after, NULL, MAX_GAMES);
   sqlite3_close(db);
   for (int i = 0; i < count; ++i) assert(!strcmp(after[i].title, before[i].title) && after[i].index == before[i].index);
+  if (argc < 3) test_pins();
 
   // Profile pictures: folders named with 8 and 16 hex digits.
   profile_cache_dir = "/tmp/lineupd-test-profile";

@@ -20,7 +20,10 @@ ordem na TV. Depois, o serviço local dele grava a nova ordem onde a tela inicia
 - **Limite da tela inicial.** A tela inicial mostra só os 12 primeiros jogos. Um traço na fileira e uma
   marca na régua mostram onde fica esse limite, e os jogos depois dele aparecem como "fora da tela
   inicial".
-- **Ordenar de A a Z**, descartar mudanças e contagem de jogos que mudaram de lugar.
+- **Jogos fixos.** □ fixa o jogo em foco na posição em que ele estiver ao salvar. Abrir outros jogos não
+  tira ele do lugar; o resto da fileira segue a regra do sistema. Em Opções dá para fixar a fileira
+  toda, desafixar todos ou remover os jogos fixos de todos os perfis. Vale a partir da 1.3.0.
+- **Ordenar de A a Z**, descartar mudanças e contagem de jogos que mudaram.
 - **Aplica ao sair.** Salvar fecha o app, e a tela inicial volta com a nova ordem. Não precisa
   reiniciar.
 - **Atualização no app.** O Lineup procura uma versão nova uma vez por dia (Opções → Atualizações
@@ -57,12 +60,13 @@ Use um ou outro. Os dois registram o title ID `PPSA99077`.
 | --- | --- | --- |
 | ✕ | Levanta o jogo em foco | Solta aqui |
 | Direcional | Move o foco | Leva o jogo |
+| □ | Fixa ou desafixa o jogo em foco | Fixa ou desafixa o jogo |
 | △ | Salva | |
 | Options | Menu Opções | |
 | ◯ | Sai (pergunta se quer salvar as mudanças) | Devolve o jogo |
 
-O Lineup muda só a ordem da fileira. Abrir um jogo depois continua trazendo ele para a frente, como
-sempre.
+Abrir um jogo depois continua trazendo ele para a frente, como sempre, a não ser que um jogo fixo ocupe
+esse lugar.
 
 ## Segurança
 
@@ -78,7 +82,8 @@ sempre.
 O app é escrito em React e roda nativo no console pelo [PS5 React](#ps5-react). Um pequeno serviço em
 C, o `lineupd`, vai dentro da pasta do app. O app inicia o serviço pelo ELF loader, e ele responde em
 `127.0.0.1:9077`. Ele lê as tabelas de cada perfil em `/system_data/priv/mms/app.db` e grava a nova
-ordem.
+ordem. Os jogos fixos ficam no lugar graças a triggers do SQLite que ele cria nesse banco;
+`POST /pins/off` e `POST /pins/uninstall` tiram tudo de novo.
 
 Veja [docs/pt-BR/ARQUITETURA.md](docs/pt-BR/ARQUITETURA.md) para os componentes, a API HTTP do serviço
 e o que se descobriu sobre como a tela inicial guarda a fileira.

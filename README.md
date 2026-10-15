@@ -19,7 +19,10 @@ out on the TV. Its local service then writes the new order where the home screen
   Options menu.
 - **Home screen edge.** The home screen shows only the first 12 games. A divider in the row and a mark
   on the ruler show where that edge falls, and games past it read "not on the home screen".
-- **Sort A to Z**, discard changes, and a count of the games that moved.
+- **Pinned games.** □ pins the focused game where it stands when you save. Opening other games no longer
+  pushes it out of its place; the rest of the row still follows the system's rule. Options can pin the
+  whole row, unpin all, or remove pinned games from every profile. Works from 1.3.0 on.
+- **Sort A to Z**, discard changes, and a count of the games that changed.
 - **Applies on exit.** Saving closes the app, and the home screen comes back with the new order. No
   restart needed.
 - **Updates in the app.** Lineup checks for a new release once a day (Options → Updates turns that off),
@@ -56,12 +59,13 @@ Use one or the other. Both register title ID `PPSA99077`.
 | --- | --- | --- |
 | ✕ | Lift the focused game | Drop it here |
 | D-pad | Move focus | Carry the game |
+| □ | Pin or unpin the focused game | Pin or unpin it |
 | △ | Save | |
 | Options | Options menu | |
 | ◯ | Quit (asks to save unsaved changes) | Put the game back |
 
-Lineup changes only the order of the home row. Opening a game afterwards still moves it to the front,
-as it always does.
+Opening a game afterwards still moves it to the front, as it always does, unless a pinned game holds
+that place.
 
 ## Safety
 
@@ -77,7 +81,8 @@ as it always does.
 The app is written in React and runs natively on the console through
 [PS5 React](#ps5-react). A small C service, `lineupd`, ships inside the app folder. The app starts it
 through the ELF loader, and it answers on `127.0.0.1:9077`. It reads the per-profile tables in
-`/system_data/priv/mms/app.db` and writes the new order back.
+`/system_data/priv/mms/app.db` and writes the new order back. Pinned games are kept in place by SQLite
+triggers it adds to that database; `POST /pins/off` and `POST /pins/uninstall` take them out again.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the components, the service's HTTP API and what
 was learned about how the home screen stores its row.

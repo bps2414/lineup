@@ -67,10 +67,12 @@ formulário simples.
 | --- | --- |
 | `GET /version` | `{"version"}` |
 | `GET /profiles` | `{"profiles":[{"userId","hex","name","avatar"}]}`; `avatar` é o mtime da foto, ou 0 |
-| `GET /row?user=<10 dígitos>` | `{"user","games":[{"titleId","name","index","icon"}]}`, na ordem da tela inicial |
+| `GET /row?user=<10 dígitos>` | `{"user","pins","games":[{"titleId","name","index","icon","pinned"}]}`, na ordem da tela inicial; `pinned` é a posição fixa ou `null`, `pins` é `"on"`, `"missing"` (fixos sem os triggers) ou `"off"` |
 | `GET /icon/<titleId>` | `image/png`, o ícone que a tela inicial desenha |
 | `GET /avatar/<10 dígitos>` | `image/png`, o `avatar.png` de `/system_data/priv/cache/profile/0x<id>/` (8 ou 16 dígitos hex) |
-| `POST /row?user=<10 dígitos>` | corpo `LIN1\n` e depois `<titleId> <índice>\n` por jogo, na nova ordem, com o índice lido. `{"ok","backup","integrity"}` |
+| `POST /row?user=<10 dígitos>` | corpo `LIN1\n` e depois `<titleId> <índice>[ pin]\n` por jogo, na nova ordem, com o índice lido; ` pin` fixa o jogo naquela posição. `{"ok","backup","integrity"}` |
+| `POST /pins/off?user=<10 dígitos>` | `{"ok","backup"}`: desafixa os jogos daquele perfil e apaga os triggers dele |
+| `POST /pins/uninstall` | `{"ok","backup"}`: remove todos os fixos, triggers e tabelas que o Lineup pôs no `app.db` |
 | `POST /quit` | `{"ok":true}`, e sai |
 | `GET /update/install` | `{"kind":"folder"\|"image","path","previous"}`: a única pasta `PPSA99077` ou imagem `Lineup-*.exfat`, e a versão guardada em `/data/lineup/update/previous/` |
 | `POST /update/apply?version=<x.y.z\|previous>` | `{"ok":true}`; depois espera o app fechar, troca os arquivos e abre o app de novo (ver Atualização) |
@@ -84,6 +86,21 @@ Os erros vêm como `{"error": "<detalhe em inglês>"}`:
 - 500: falha no banco.
 
 O app mostra um título próprio no idioma da interface e põe o detalhe depois.
+
+## Jogos fixos
+
+O sistema leva um jogo para a frente toda vez que ele abre. Para um jogo fixo continuar no lugar, o lineupd
+cria três triggers na `tbl_iconinfo_<user>` do perfil, dentro do `app.db`: `lineup_pin_u_<user>` (depois de um
+update que aumenta o `lastAccessIndex`, o que abrir um jogo faz duas vezes), `lineup_pin_i_<user>` (instalar) e
+`lineup_pin_d_<user>` (desinstalar). Eles rodam dentro da própria gravação do sistema e reordenam a fileira antes
+de a tela inicial ler de novo: os fixos ficam na sua posição (vão para o fim se a fileira encolher) e os outros
+ocupam as posições livres pela ordem de uso. Como ao salvar, a reordenação só reaproveita índices que a fileira
+já tem. As posições ficam em `lineup_pin`; `lineup_seq` e `lineup_tmp` são tabelas auxiliares. O SQL não usa
+CTE, funções de janela, UPSERT nem `RETURNING`.
+
+Ao salvar, o lineupd apaga os triggers do perfil, grava a ordem e os fixos e recria os triggers se houver fixos,
+tudo numa transação só. Quando nenhum perfil tem mais jogos fixos, as tabelas também saem. Reconstruir o banco de
+dados pode apagar os triggers; aí o `/row` responde `"missing"` e o app oferece fixar de novo.
 
 ## Atualização
 
