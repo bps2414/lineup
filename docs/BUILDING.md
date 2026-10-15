@@ -15,13 +15,11 @@ Node.js 22 with npm, Python 3.12+. LLVM is expected in `/usr/lib/llvm-18/bin` (o
 ## Clone
 
 ```sh
-git clone --recurse-submodules https://github.com/bps2414/lineup.git
+git clone https://github.com/bps2414/lineup.git
 cd lineup
 ```
 
-`ps5-react/` is a submodule (the framework); without it nothing builds.
-
-On Windows checkouts set `git config --global core.autocrlf false` before cloning: CRLF line endings break the `ps5-react` patches. Building from WSL or Linux is fine.
+`ps5-react/` is the PS5 React framework, kept in this repository with the changes Lineup needs (see [ARCHITECTURE.md](ARCHITECTURE.md)). `.gitattributes` checks every file out with LF endings, which its patches need.
 
 ## Steps
 
@@ -37,7 +35,7 @@ A good build ends with `PASS: title metadata, icon, PS5 ELF/segments, SELF integ
 
 - `Lineup-<version>.exfat`: exFAT image (64 KB clusters, label `LINEUP`, app at the image root) for ShadowMountPlus. It is filled through a loop mount, so it needs `sudo`; pass `--no-exfat` to skip it.
 - `Lineup-<version>.zip`: contains `PPSA99077/`, for FTP install to `/data/homebrew/PPSA99077`.
-- `Lineup-<version>-source.tar.gz`: repository plus submodule sources (GPL corresponding source).
+- `Lineup-<version>-source.tar.gz`: the repository sources, framework included (GPL corresponding source).
 - `SHA256SUMS`
 
 ## Releases

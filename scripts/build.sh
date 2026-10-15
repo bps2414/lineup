@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LLVM="${LLVM:-/usr/lib/llvm-18/bin}"
 cd "$ROOT/ps5-react"
-[ -f tools/build_ps5.py ] || { echo "ps5-react is empty: git submodule update --init --recursive" >&2; exit 1; }
+[ -f tools/build_ps5.py ] || { echo "ps5-react/tools/build_ps5.py is missing" >&2; exit 1; }
 
 [ -d node_modules ] || npm ci --omit=optional
 if [ ! -x .venv/bin/python3 ]; then

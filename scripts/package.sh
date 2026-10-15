@@ -15,9 +15,8 @@ STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
 cp -r "$SRC" "$STAGE/PPSA99077"
 (cd "$STAGE" && zip -qr "$DIST/Lineup-$VERSION.zip" PPSA99077)
 
-# Source tarball incl. the ps5-react submodule (GPL corresponding source), no build outputs.
-(cd "$ROOT" && { git ls-files; git submodule foreach --recursive --quiet 'git ls-files | sed "s|^|$displaypath/|"'; } \
-  | sort -u | while IFS= read -r f; do { [ -f "$f" ] && echo "$f" || true; }; done > "$STAGE/files.txt"
+# Source tarball: every tracked file, framework included (GPL corresponding source), no build outputs.
+(cd "$ROOT" && git ls-files | while IFS= read -r f; do { [ -f "$f" ] && echo "$f" || true; }; done > "$STAGE/files.txt"
   tar --transform "s|^|Lineup-$VERSION/|" -czf "$DIST/Lineup-$VERSION-source.tar.gz" -T "$STAGE/files.txt")
 
 # exFAT image: app at the image root, 64K clusters, size a multiple of 64 KiB.
