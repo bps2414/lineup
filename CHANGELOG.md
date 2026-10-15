@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0
+
+- Pinned games: □ pins the focused game at its place when you save. Opening other games no longer
+  pushes it out; the rest of the row still follows the system's rule (the last game opened takes the
+  first free place). A pin badge marks the game, a block marks it on the ruler, and the position reads
+  "pinned at 3rd".
+- Options: Pin the whole row, Unpin all, and Remove pinned games from every profile.
+- If the system rebuilds its database and the pins come loose, Lineup offers to pin the games again.
+- The change count includes pins.
+
 ## 1.2.0
 
 - Profile pictures: in the header, under Options, and next to each name in Switch profile. A profile
