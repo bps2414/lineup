@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Lineup's interface pieces: the mark, controller glyphs, button hints, the lift light, the side sheet,
-// dialogs, buttons, full-screen messages and the toast. Black and white only.
+// Lineup's interface pieces: the mark, profile pictures, controller glyphs, button hints, the lift light, the
+// side sheet, dialogs, buttons, full-screen messages and the toast. Black and white only.
 import {useEffect} from 'react';
-import {Animated, Circle, Easing, FocusScope, Path, Rect, Svg, Text, View, motion, transitions,
+import {Animated, Circle, Easing, FocusScope, Image, Path, Rect, Svg, Text, View, motion, transitions,
   useAnimatedValue, useIsFocused} from '@ps5-react/core';
+import {avatarUrl} from './api.js';
 
 export const C = {canvas: '#000000', surface: '#17171a', surface2: '#212125', line: '#2a2a2f',
   fg: '#f2f2f3', muted: '#a3a3ab', subtle: '#8a8a94', dim: '#55555c'};
@@ -123,11 +124,29 @@ function ItemBody({label, detail, checked}) {
   );
 }
 
-/** A sheet row: white text on the panel, inverted while focused. */
-export function SheetItem({label, detail, checked = false, autoFocus = false, onPress}) {
+// Greys only, to keep the app black and white; a name always gets the same one.
+const SHADES = ['#2a2a2f', '#35353b', '#414148', '#4d4d55', '#5a5a63'];
+
+/** A profile's picture, over its initial on a grey picked from the name, which shows while there is none. */
+export function Avatar({profile, size}) {
+  const name = profile?.name ?? '';
+  let hash = 0;
+  for (const c of name) hash = (hash * 31 + c.codePointAt(0)) | 0;
+  return (
+    <View className="rounded-full items-center justify-center"
+      style={{width: px(size), height: px(size), backgroundColor: SHADES[Math.abs(hash) % SHADES.length]}}>
+      <Text className="font-inter text-fg" style={{fontSize: px(size * 0.45)}}>{[...name][0]?.toUpperCase() ?? ''}</Text>
+      {profile?.avatar ? <Image source={{uri: avatarUrl(profile)}} className="absolute inset-0 rounded-full" /> : null}
+    </View>
+  );
+}
+
+/** A sheet row: white text on the panel, inverted while focused. `leading` goes left of the label. */
+export function SheetItem({label, detail, leading, checked = false, autoFocus = false, onPress}) {
   return (
     <View onPress={onPress} autoFocus={autoFocus}
       className="flex-row items-center gap-4 h-[56px] px-5 rounded-[10px] focused:bg-fg">
+      {leading}
       <ItemBody label={label} detail={detail} checked={checked} />
     </View>
   );
@@ -135,8 +154,11 @@ export function SheetItem({label, detail, checked = false, autoFocus = false, on
 
 export const SheetRule = () => <View className="h-[2px] mx-5 my-2 bg-line" />;
 
-/** Right side sheet. Traps focus; Circle and Options close it. `page` remounts the list (and its focus). */
-export function Sheet({title, subtitle, page, onClose, onBack = onClose, children}) {
+/**
+ * Right side sheet. Traps focus; Circle and Options close it. `page` remounts the list (and its focus).
+ * `leading` goes left of the subtitle.
+ */
+export function Sheet({title, subtitle, leading, page, onClose, onBack = onClose, children}) {
   const back = () => {
     onBack();
     return true;
@@ -153,7 +175,12 @@ export function Sheet({title, subtitle, page, onClose, onBack = onClose, childre
           px-5 pt-14 pb-24 gap-8" initial={{x: 440}} animate={{x: 0}} transition={slide}>
           <View className="px-5 gap-1.5">
             <Text className="font-inter text-sheet text-fg">{title}</Text>
-            {subtitle ? <Text className="font-inter text-small text-muted truncate">{subtitle}</Text> : null}
+            {subtitle ? (
+              <View className="flex-row items-center gap-2.5">
+                {leading}
+                <Text className="flex-1 font-inter text-small text-muted truncate">{subtitle}</Text>
+              </View>
+            ) : null}
           </View>
           <FocusScope key={page} autoFocus>
             <View className="gap-1">{children}</View>

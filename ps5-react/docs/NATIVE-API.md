@@ -438,7 +438,7 @@ else throws. The desktop preview returns `{ok: false, error: 'payloads.start req
 root with the SDK's `prospero-clang` (`-std=gnu11 -O2 -Wall -Wextra -Werror`), linked with the pinned
 SQLite 3.46.1 amalgamation (`dependencies.lock.json`, compiled once per build with
 `-DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_DQS=0`) and
-`-lkernel_sys`. Payload names follow the pattern above and may not reuse the framework's own
+`-lkernel_sys -lSceUserService -lSceSystemService` (so a payload can launch the app, as relauncher.elf does). Payload names follow the pattern above and may not reuse the framework's own
 (`pkg-installer`, `rar-extract`, `relauncher`, `browser-capture`, `lapy`). Validated on firmware 13.60
 (kstuff, elfldr 0.26, ShadowMountPlus) by the Lineup app, which starts its local service this way.
 

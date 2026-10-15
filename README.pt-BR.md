@@ -15,13 +15,17 @@ ordem na TV. Depois, o serviço local dele grava a nova ordem onde a tela inicia
 
 - **Levantar, mover, soltar.** ✕ levanta o jogo em foco, o direcional leva e ✕ solta. ◯ durante o
   movimento devolve o jogo ao lugar.
-- **Todos os perfis.** Cada perfil do console tem sua fileira. Troque pelo menu Opções.
+- **Todos os perfis.** Cada perfil do console tem sua fileira, mostrada com a foto dele. Troque pelo
+  menu Opções.
 - **Limite da tela inicial.** A tela inicial mostra só os 12 primeiros jogos. Um traço na fileira e uma
   marca na régua mostram onde fica esse limite, e os jogos depois dele aparecem como "fora da tela
   inicial".
 - **Ordenar de A a Z**, descartar mudanças e contagem de jogos que mudaram de lugar.
 - **Aplica ao sair.** Salvar fecha o app, e a tela inicial volta com a nova ordem. Não precisa
   reiniciar.
+- **Atualização no app.** O Lineup procura uma versão nova uma vez por dia (Opções → Atualizações
+  desliga isso), baixa quando você escolhe **Atualizar** e abre de novo na versão nova. Em Opções →
+  Atualizações também dá para voltar à versão anterior. Vale a partir da 1.2.0.
 - **Inglês e português do Brasil**, escolhidos pelo idioma do sistema.
 
 ![O menu Opções](docs/images/options.png)

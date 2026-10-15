@@ -11,9 +11,9 @@ import {AnimatePresence, AppRegistry, BackHandler, Controller, FocusScope, Image
   motion, useFocusActions} from '@ps5-react/core';
 import {useInterfaceSounds} from './sounds.js';
 import * as api from './api.js';
-import {T} from './i18n.js';
+import {LANGUAGE, T} from './i18n.js';
 import {BOTTOM, DIGITS, EM, TOP} from './digits.js';
-import {Badge, Button, C, Dialog, Hints, LiftLight, Mark, Message, Sheet, SheetItem, SheetRule, Toast, Wash,
+import {Avatar, Badge, Button, C, Dialog, Hints, LiftLight, Mark, Message, Sheet, SheetItem, SheetRule, Toast, Wash,
   px} from './ui.jsx';
 
 const LEFT = 64;           // the focused game's left edge
@@ -200,12 +200,13 @@ function Position({s}) {
   );
 }
 
-function Header({name}) {
+function Header({profile}) {
   return (
     <View className="absolute left-16 top-10 flex-row items-center gap-4">
       <Mark />
       <Text className="font-inter text-head text-fg">Lineup</Text>
-      {name ? <Text className="font-inter text-head text-muted">{name}</Text> : null}
+      {profile ? <Avatar profile={profile} size={36} /> : null}
+      {profile ? <Text className="font-inter text-head text-muted">{profile.name}</Text> : null}
     </View>
   );
 }
@@ -217,7 +218,9 @@ const PICK_HINTS = [['cross', H.choose], ['circle', H.back]];
 
 const START = {phase: 'loading', step: T.service.looking, error: null, profiles: [], user: null,
   games: {}, home: {}, base: [], order: [], focus: 0, dir: 1, lifted: false, liftFrom: 0, layer: null,
-  target: null, toast: null, pending: null};
+  target: null, toast: null, pending: null, progress: null, settings: null, update: null, install: null};
+
+const DAY = 24 * 60 * 60 * 1000;
 
 function App() {
   const [s, setS] = useState(START);
@@ -284,17 +287,82 @@ function App() {
       if (!profiles.length) {
         throw new api.Problem(...T.noProfiles);
       }
+      // Decoded ahead at the profile list's size, so the list opens with its pictures.
+      for (const profile of profiles) {
+        if (profile.avatar) Image.prefetch(api.avatarUrl(profile), {width: px(40), height: px(40)}).catch(() => {});
+      }
       const foreground = Users.getForeground();
       const id = foreground ? String(foreground.id >>> 0).padStart(10, '0') : '';
       await loadRow((profiles.find(profile => profile.userId === id) ?? profiles[0]).userId, profiles);
     } catch (error) {
       patch({phase: 'error', error: error instanceof api.Problem ? error
         : {title: T.openFailed, detail: String(error?.message ?? error)}});
+      return;
     }
+    afterOpen();
   };
   useEffect(() => {
     boot();
   }, []);
+
+  const keepSettings = settings => {
+    api.saveSettings(settings);
+    patch({settings});
+  };
+
+  // In the background once the row is up: how the last update went, then a check at most once a day.
+  const afterOpen = async () => {
+    const outcome = api.updateOutcome();
+    if (outcome) toast(outcome);
+    const settings = api.settings();
+    patch({settings});
+    api.install().then(install => patch({install}), error => patch({install: {error: error.message}}));
+    if (!settings.checkOnOpen || Date.now() - settings.lastCheck < DAY) return;
+    try {
+      const update = await api.checkUpdate();
+      keepSettings({...ref.current.settings, lastCheck: Date.now()});
+      if (update) {
+        patch({update});
+        toast(T.update.available(update.version));
+      }
+    } catch {
+      // Offline, say: the next opening tries again.
+    }
+  };
+
+  const checkNow = async () => {
+    patch({layer: 'busy'});
+    try {
+      const update = await api.checkUpdate();
+      keepSettings({...ref.current.settings, lastCheck: Date.now()});
+      if (update) patch({update, layer: 'update'});
+      else {
+        close();
+        toast(T.update.upToDate);
+      }
+    } catch (error) {
+      close();
+      toast(error.message);
+    }
+  };
+
+  // Downloads and prepares the update, hands the swap to lineupd and closes; lineupd opens the app again.
+  const runUpdate = async version => {
+    const {update, install} = ref.current;
+    light(false);
+    patch({lifted: false, layer: 'busy', progress: T.update.preparing});
+    try {
+      if (!install || install.error) throw new Error(install?.error ?? T.update.noAnswer);
+      if (version !== 'previous') await api.download(update, install.kind, progress => patch({progress}));
+      patch({progress: T.update.applying});
+      await api.apply(version);
+      exit();
+    } catch (error) {
+      patch({progress: null});
+      close();
+      toast(error.message);
+    }
+  };
 
   const switchTo = async user => {
     patch({layer: 'busy'});
@@ -421,7 +489,7 @@ function App() {
     return (
       <View className="w-screen h-screen bg-canvas">
         <Wash />
-        <Header name={profile?.name} />
+        <Header profile={profile} />
         <FocusScope autoFocus onBack={back} onAction={() => true}>
           {saved ? (
             <Message icon={<Badge kind="ok" />} title={T.saved[0]}
@@ -442,23 +510,36 @@ function App() {
 
   const count = changed(s);
   const hints = s.layer ? PICK_HINTS : s.lifted ? LIFT_HINTS : ROW_HINTS;
+  const settings = s.settings ?? {checkOnOpen: true, lastCheck: 0};
+  const file = s.update?.[s.install?.kind === 'image' ? 'exfat' : 'zip'];
+  const notes = [s.update?.notes?.[LANGUAGE] ?? s.update?.notes?.en, file?.size ? T.update.size(file.size) : '']
+    .filter(Boolean).join('\n\n');
   return (
     <View className="w-screen h-screen bg-canvas">
       <Wash />
-      <Header name={profile?.name} />
+      <Header profile={profile} />
       <FocusScope row autoFocus onBack={onBack} onAction={onAction}>
         <Slots count={s.order.length} onFocusIndex={onFocusIndex} onPressIndex={onPressIndex} />
       </FocusScope>
       <Row s={s} />
       <Rail s={s} />
       <Position s={s} />
-      {s.layer === 'menu' || s.layer === 'profiles' ? (
-        // One sheet for both pages, so it stays put and still knows which game to give focus back to.
+      {s.layer === 'menu' || s.layer === 'profiles' || s.layer === 'updates' ? (
+        // One sheet for every page, so it stays put and still knows which game to give focus back to.
         <Sheet page={s.layer} onClose={close}
-          onBack={() => (s.layer === 'profiles' ? patch({layer: 'menu'}) : close())}
-          title={s.layer === 'menu' ? T.menu.title : T.profilesTitle}
-          subtitle={s.layer === 'menu' ? profile?.name : T.profilesSubtitle}>
-          {s.layer === 'menu' ? [
+          onBack={() => (s.layer === 'menu' ? close() : patch({layer: 'menu'}))}
+          title={s.layer === 'menu' ? T.menu.title : s.layer === 'profiles' ? T.profilesTitle : T.updates.title}
+          subtitle={s.layer === 'menu' ? profile?.name : s.layer === 'profiles' ? T.profilesSubtitle : `Lineup ${api.VERSION}`}
+          leading={s.layer === 'menu' && profile ? <Avatar profile={profile} size={24} /> : null}>
+          {s.layer === 'updates' ? [
+            <SheetItem key="open" label={T.updates.checkOnOpen} checked={settings.checkOnOpen}
+              onPress={() => keepSettings({...settings, checkOnOpen: !settings.checkOnOpen})} />,
+            <SheetItem key="now" label={T.updates.checkNow} onPress={checkNow} />,
+            s.install?.previous ? (
+              <SheetItem key="back" label={T.updates.rollback} detail={s.install.previous}
+                onPress={() => patch({layer: 'rollback'})} />
+            ) : null,
+          ] : s.layer === 'menu' ? [
             <SheetItem key="save" label={T.menu.save} onPress={() => save()}
               detail={T.menu.changes(count)} />,
             <SheetItem key="discard" label={T.menu.discard} onPress={discard} />,
@@ -466,8 +547,13 @@ function App() {
             <SheetRule key="rule" />,
             <SheetItem key="profiles" label={T.menu.profiles} onPress={() => patch({layer: 'profiles'})}
               detail={s.profiles.length > 1 ? T.menu.profileCount(s.profiles.length) : ''} />,
+            s.update ? (
+              <SheetItem key="update" label={T.menu.updateTo(s.update.version)} onPress={() => patch({layer: 'update'})} />
+            ) : null,
+            <SheetItem key="updates" label={T.menu.updates} onPress={() => patch({layer: 'updates'})} />,
           ] : s.profiles.map(item => (
             <SheetItem key={item.userId} label={item.name} checked={item.userId === s.user}
+              leading={<Avatar profile={item} size={40} />}
               autoFocus={item.userId === s.user} onPress={() => pickProfile(item.userId)} />
           ))}
         </Sheet>
@@ -487,12 +573,25 @@ function App() {
           <Button label={T.switchDialog.back} onPress={() => patch({layer: 'profiles'})} />
         </Dialog>
       ) : null}
+      {s.layer === 'update' && s.update ? (
+        <Dialog title={T.update.title(s.update.version)} onBack={close} body={notes}>
+          <Button label={T.update.install} onPress={() => runUpdate(s.update.version)} />
+          <Button label={T.update.later} onPress={close} />
+        </Dialog>
+      ) : null}
+      {s.layer === 'rollback' ? (
+        <Dialog title={T.update.rollbackTitle(s.install?.previous ?? '')} body={T.update.rollbackBody}
+          onBack={() => patch({layer: 'updates'})}>
+          <Button label={T.update.rollbackConfirm} onPress={() => runUpdate('previous')} />
+          <Button label={T.update.cancel} onPress={() => patch({layer: 'updates'})} />
+        </Dialog>
+      ) : null}
       {s.layer === 'busy' ? (
         <FocusScope trap autoFocus onBack={() => true} onAction={() => true}>
           <View className="absolute inset-0 bg-black/70 items-center justify-center">
             <View focusable className="flex-row items-center gap-4 rounded-2xl bg-surface border-2 border-line px-8 py-6">
               <Mark breathing />
-              <Text className="font-inter text-body text-fg">{T.busy}</Text>
+              <Text className="font-inter text-body text-fg">{s.progress ?? T.busy}</Text>
             </View>
           </View>
         </FocusScope>
