@@ -25,8 +25,8 @@ out on the TV. Its local service then writes the new order where the home screen
 - **Sort A to Z**, discard changes, and a count of the games that changed.
 - **Applies on exit.** Saving closes the app, and the home screen comes back with the new order. No
   restart needed.
-- **Updates in the app.** Lineup checks for a new release once a day (Options → Updates turns that off),
-  downloads it when you choose **Update**, and opens again on the new version. Options → Updates can
+- **Updates in the app.** Lineup checks for a new release when it opens and shows its notes (Options →
+  Updates turns that off), downloads it when you choose **Update**, and opens again on the new version. Options → Updates can
   also go back to the previous version. This works from 1.2.0 on.
 - **English and Brazilian Portuguese**, chosen from the console's system language.
 

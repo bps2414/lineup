@@ -48,8 +48,10 @@ A referência está em [ps5-react/docs/NATIVE-API.md](../../ps5-react/docs/NATIV
 ## Abertura
 
 1. O app chama `GET /version`. Se receber a mesma versão do `VERSION` do `api.js`, segue.
-2. Se outra versão responder, o app pede para ela sair (`POST /quit`). Também manda `POST /sair` com
-   `X-Fileira: 1`, que para o serviço de antes da renomeação.
+0. Se `/data/lineup/update/applying` existir, o lineupd ainda está trocando os arquivos: o app mostra
+   "Terminando a atualização", espera a marca sumir (no máximo 90 s) e abre de novo com
+   `BackHandler.exitApp({relaunch: true})`, porque ele é a versão antiga.
+2. Se outra versão responder, o app pede para ela sair (`POST /quit`).
 3. Senão, o app chama `Payloads.start('lineupd.elf')` e consulta `/version` por até 5 segundos.
 4. Ele lê `/profiles`, escolhe o usuário em primeiro plano (`Users.getForeground()`) e lê o `/row`
    desse usuário.
@@ -105,23 +107,28 @@ dados pode apagar os triggers; aí o `/row` responde `"missing"` e o app oferece
 ## Atualização
 
 O app lê `https://github.com/bps2414/lineup/releases/latest/download/update.json` (gerado pelo
-`scripts/package.sh`: versão, notas, e nome, tamanho e SHA-256 do zip e do `.exfat`) ao abrir, no máximo
-uma vez por dia, e por Opções → Atualizações. A configuração fica em `/data/lineup/settings.json`.
+`scripts/package.sh`: versão, notas, e nome, tamanho e SHA-256 do zip e do `.exfat`) ao abrir e por
+Opções → Atualizações. Uma versão nova abre o diálogo na hora, a não ser que o usuário esteja no meio de algo
+ou tenha pulado essa versão com "Agora não" (`skipped` em `/data/lineup/settings.json`, junto com
+`checkOnOpen`). As notas vêm do `CHANGELOG.md` e do `docs/pt-BR/NOVIDADES.md`, com as linhas quebradas juntadas.
 
 1. `Downloads.enqueue` baixa o zip (instalação em pasta) ou o `.exfat` (em imagem) para
    `/data/lineup/update/<versão>/`, conferido com o tamanho e o SHA-256 do manifesto.
 2. O zip é aberto com `Archives.extract` em `stage/`, e o app confere `PPSA99077/sce_sys/param.json`
    (title ID, versão), `eboot.bin` e `lineupd.elf`.
 3. `POST /update/apply`. O lineupd acha sozinho a instalação e a origem, recusa versão que não seja mais
-   nova, responde e espera `sceLncUtilGetAppId` ficar negativo (no máximo 30 s), mais 500 ms.
-   - Pasta: copia a pasta para `/data/lineup/update/previous/`; depois grava cada arquivo novo como
-     `.<nome>.new`, faz `fsync` e `rename` por cima do antigo, e apaga o que a versão nova não tem. Se
-     falhar, devolve a cópia salva.
+   nova, copia a instalação em pasta para `/data/lineup/update/previous.new/` enquanto o app ainda mostra
+   "Guardando uma cópia", grava a marca `applying`, responde e espera `sceLncUtilGetAppId` ficar negativo
+   (no máximo 30 s), mais 500 ms.
+   - Pasta: grava cada arquivo novo como `.<nome>.new` e faz `rename` por cima do antigo, apaga o que a
+     versão nova não tem, e o `previous.new/` vira `previous/`. Se falhar, devolve a cópia salva.
    - Imagem: recusa se ela continuar montada (`persistent_image_mounts`), move a antiga para
      `previous/` e a nova para a pasta dela, e espera 25 s pelo ShadowMountPlus.
-   - Depois, `sceLncUtilLaunchApp` para o usuário em primeiro plano. Uma falha fica em
-     `/data/lineup/update/error`, e o app mostra.
-4. O app novo troca o lineupd (`ensureService`), grava `/data/lineup/update/ok-<versão>` e avisa que foi
+   - Depois, um `sync()`, a marca sai e o lineupd passa o bastão: fecha a porta, manda o `lineupd.elf`
+     instalado para o ELF loader na 9021 e sai (se isso falhar, ele continua atendendo). Então
+     `sceLncUtilLaunchApp` para o usuário em primeiro plano, a não ser que o app já esteja aberto de novo.
+     Uma falha fica em `/data/lineup/update/error`, e o app mostra.
+4. O app novo já encontra o lineupd dele rodando, grava `/data/lineup/update/ok-<versão>` e avisa que foi
    atualizado. Voltar à versão anterior usa `previous/` pelo mesmo caminho.
 
 ## Como a tela inicial guarda a fileira

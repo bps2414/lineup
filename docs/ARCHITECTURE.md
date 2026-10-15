@@ -49,8 +49,10 @@ The reference is in [ps5-react/docs/NATIVE-API.md](../ps5-react/docs/NATIVE-API.
 ## Startup
 
 1. The app calls `GET /version`. If it gets the same version as `api.js` `VERSION`, it goes on.
-2. If another version answers, the app asks it to quit (`POST /quit`). It also sends `POST /sair` with
-   `X-Fileira: 1`, which stops the service from before the rename.
+0. If `/data/lineup/update/applying` exists, lineupd is still swapping the files: the app shows "Finishing
+   the update", waits for the marker to go (90 s at most) and opens again with `BackHandler.exitApp({relaunch:
+   true})`, since it is the old version.
+2. If another version answers, the app asks it to quit (`POST /quit`).
 3. Otherwise the app calls `Payloads.start('lineupd.elf')` and polls `/version` for up to 5 seconds.
 4. It reads `/profiles`, picks the foreground user (`Users.getForeground()`), and reads that user's
    `/row`.
@@ -106,22 +108,27 @@ database can drop the triggers; `/row` then says `"missing"` and the app offers 
 
 The app reads `https://github.com/bps2414/lineup/releases/latest/download/update.json` (written by
 `scripts/package.sh`: version, notes, and name, size and SHA-256 of the zip and the `.exfat`) when it
-opens, at most once a day, and from Options → Updates. Settings are in `/data/lineup/settings.json`.
+opens, and from Options → Updates. A newer version opens its dialog at once, unless the user is busy or put
+that version off with Not now (`skipped` in `/data/lineup/settings.json`, with `checkOnOpen`). The notes come
+from `CHANGELOG.md` and `docs/pt-BR/NOVIDADES.md`, with wrapped lines joined.
 
 1. `Downloads.enqueue` fetches the zip (folder install) or the `.exfat` (image install) into
    `/data/lineup/update/<version>/`, checked against the manifest's size and SHA-256.
 2. A zip is unpacked with `Archives.extract` into `stage/`, and `PPSA99077/sce_sys/param.json` (title ID,
    version), `eboot.bin` and `lineupd.elf` are checked.
 3. `POST /update/apply`. lineupd finds the install and the source itself, refuses a version that is not
-   newer, answers, and waits for `sceLncUtilGetAppId` to go negative (30 s at most) plus 500 ms.
-   - Folder: copies it to `/data/lineup/update/previous/`, then writes each new file as `.<name>.new`,
-     flushes and renames it over the old one, and removes what the new version lacks. On failure it puts
-     the saved copy back.
+   newer, copies a folder install to `/data/lineup/update/previous.new/` while the app still shows
+   "Keeping a copy", writes the `applying` marker, answers, and waits for `sceLncUtilGetAppId` to go
+   negative (30 s at most) plus 500 ms.
+   - Folder: writes each new file as `.<name>.new` and renames it over the old one, removes what the new
+     version lacks, then `previous.new/` becomes `previous/`. On failure it puts the saved copy back.
    - Image: refuses while it is still mounted (`persistent_image_mounts`), moves the old image to
      `previous/` and the new one into its folder, then waits 25 s for ShadowMountPlus.
-   - Then `sceLncUtilLaunchApp` for the foreground user. A failure is left in
-     `/data/lineup/update/error`, and the app shows it.
-4. The new app replaces lineupd (`ensureService`), writes `/data/lineup/update/ok-<version>` and says it
+   - Then one `sync()`, the marker goes, and lineupd hands over: it closes its port, sends the installed
+     `lineupd.elf` to the ELF loader on 9021 and exits (if that fails it keeps serving). Then
+     `sceLncUtilLaunchApp` for the foreground user, unless the app is already open again. A failure is
+     left in `/data/lineup/update/error`, and the app shows it.
+4. The new app finds its own lineupd running, writes `/data/lineup/update/ok-<version>` and says it
    was updated. Going back uses `previous/` the same way.
 
 ## How the home screen stores the row

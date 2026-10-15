@@ -239,8 +239,6 @@ const START = {phase: 'loading', step: T.service.looking, error: null, profiles:
   games: {}, home: {}, base: [], order: [], pins: {}, pinned: {}, focus: 0, dir: 1, lifted: false, liftFrom: 0, layer: null,
   target: null, toast: null, pending: null, progress: null, settings: null, update: null, install: null};
 
-const DAY = 24 * 60 * 60 * 1000;
-
 function App() {
   const [s, setS] = useState(START);
   const ref = useRef(s);
@@ -304,6 +302,13 @@ function App() {
   const boot = async () => {
     patch({...START, phase: 'loading'});
     try {
+      if (api.applying()) patch({step: T.update.finishing});
+      if (await api.finishUpdate()) {
+        // This copy of the app is the version just replaced: open the new one.
+        Controller.resetLightBar();
+        if (BackHandler.exitApp({relaunch: true})) return;
+        throw new api.Problem(...T.update.reopen);
+      }
       await api.ensureService(step => patch({step}));
       const profiles = await api.profiles();
       if (!profiles.length) {
@@ -332,31 +337,37 @@ function App() {
     patch({settings});
   };
 
-  // In the background once the row is up: how the last update went, then a check at most once a day.
+  // In the background once the row is up: how the last update went, then a check, whose news opens at once
+  // unless the user put that version off or is already busy with something.
   const afterOpen = async () => {
     const outcome = api.updateOutcome();
     if (outcome) toast(outcome);
     const settings = api.settings();
     patch({settings});
     api.install().then(install => patch({install}), error => patch({install: {error: error.message}}));
-    if (!settings.checkOnOpen || Date.now() - settings.lastCheck < DAY) return;
+    if (!settings.checkOnOpen) return;
     try {
       const update = await api.checkUpdate();
-      keepSettings({...ref.current.settings, lastCheck: Date.now()});
-      if (update) {
+      if (!update) return;
+      const now = ref.current;
+      if (now.settings.skipped === update.version || now.phase !== 'row' || now.layer || now.lifted) {
         patch({update});
         toast(T.update.available(update.version));
-      }
+      } else patch({update, layer: 'update'});
     } catch {
       // Offline, say: the next opening tries again.
     }
+  };
+
+  const later = () => {
+    keepSettings({...ref.current.settings, skipped: ref.current.update.version});
+    close();
   };
 
   const checkNow = async () => {
     patch({layer: 'busy'});
     try {
       const update = await api.checkUpdate();
-      keepSettings({...ref.current.settings, lastCheck: Date.now()});
       if (update) patch({update, layer: 'update'});
       else {
         close();
@@ -376,8 +387,9 @@ function App() {
     try {
       if (!install || install.error) throw new Error(install?.error ?? T.update.noAnswer);
       if (version !== 'previous') await api.download(update, install.kind, progress => patch({progress}));
-      patch({progress: T.update.applying});
+      patch({progress: T.update.backingUp});
       await api.apply(version);
+      patch({progress: T.update.applying});
       exit();
     } catch (error) {
       patch({progress: null});
@@ -559,7 +571,7 @@ function App() {
   const count = changed(s);
   const pinHint = ['square', s.pins[s.order[s.focus]] ? H.unpin : H.pin];
   const hints = s.layer ? PICK_HINTS : s.lifted ? LIFT_HINTS : [ROW_HINTS[0], pinHint, ...ROW_HINTS.slice(1)];
-  const settings = s.settings ?? {checkOnOpen: true, lastCheck: 0};
+  const settings = s.settings ?? {checkOnOpen: true, skipped: ''};
   const file = s.update?.[s.install?.kind === 'image' ? 'exfat' : 'zip'];
   const notes = [s.update?.notes?.[LANGUAGE] ?? s.update?.notes?.en, file?.size ? T.update.size(file.size) : '']
     .filter(Boolean).join('\n\n');
@@ -626,9 +638,9 @@ function App() {
         </Dialog>
       ) : null}
       {s.layer === 'update' && s.update ? (
-        <Dialog title={T.update.title(s.update.version)} onBack={close} body={notes}>
+        <Dialog title={T.update.title(s.update.version)} onBack={later} body={notes} wide>
           <Button label={T.update.install} onPress={() => runUpdate(s.update.version)} />
-          <Button label={T.update.later} onPress={close} />
+          <Button label={T.update.later} onPress={later} />
         </Dialog>
       ) : null}
       {s.layer === 'rollback' ? (

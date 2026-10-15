@@ -3,7 +3,7 @@
 import {Archives, Downloads, FileSystem, Http, Payloads} from '@ps5-react/core';
 import {T} from './i18n.js';
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.4.0';
 const BASE = 'http://127.0.0.1:9077';
 
 /** An error the app shows as is: a short title and what to do about it. */
@@ -67,17 +67,15 @@ export async function ensureService(onStep) {
   if (running === VERSION) return;
   if (running !== null) {
     onStep(T.service.replacing);
-    // A service from before the rename answers /versao and quits on /sair.
     await call('/quit', {method: 'POST', timeoutMs: 1500}).catch(() => {});
-    await Http.request(`${BASE}/sair`, {method: 'POST', headers: {'X-Fileira': '1'}}).catch(() => {});
-    await sleep(400);
+    await sleep(150);
   }
   onStep(T.service.starting);
   if (typeof Payloads?.start !== 'function') throw problem(T.service.noApi);
   const started = Payloads.start('lineupd.elf');
   if (!started.ok) throw problem(T.service.notStarted(started.error));
-  for (let waited = 0; waited < 5000; waited += 250) {
-    await sleep(250);
+  for (let waited = 0; waited < 5000; waited += 150) {
+    await sleep(150);
     running = await version();
     if (running === VERSION) return;
   }
@@ -145,11 +143,12 @@ const RELEASES = 'https://github.com/bps2414/lineup/releases/download';
 const versionNumber = text => (/^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(text ?? '')
   ? text.split('.').reduce((n, part) => n * 1000 + Number(part), 0) : -1);
 
+// `skipped`: the version the user put off with "Not now", so opening the app does not offer it again.
 export function settings() {
   try {
-    return {checkOnOpen: true, lastCheck: 0, ...JSON.parse(FileSystem.readFile(SETTINGS))};
+    return {checkOnOpen: true, skipped: '', ...JSON.parse(FileSystem.readFile(SETTINGS))};
   } catch {
-    return {checkOnOpen: true, lastCheck: 0};
+    return {checkOnOpen: true, skipped: ''};
   }
 }
 
@@ -242,15 +241,46 @@ export async function download(manifest, kind, onStep) {
   }
 }
 
-/** Hands the swap to lineupd; `version` 'previous' goes back. The app must close right after. */
+/**
+ * Hands the swap to lineupd; `version` 'previous' goes back. lineupd copies the installed version aside before
+ * it answers, so this can take a while. The app must close right after.
+ */
 export async function apply(version) {
   let reply;
   try {
-    reply = await call(`/update/apply?version=${version}`, {method: 'POST', timeoutMs: 8000});
+    reply = await call(`/update/apply?version=${version}`, {method: 'POST', timeoutMs: 120000});
   } catch {
     throw new Error(T.update.noAnswer);
   }
   if (!reply.ok) throw new Error(T.update.applyFailed(reply.data.error ?? T.service.status(reply.status)));
+}
+
+const APPLYING = `${UPDATE_DIR}/applying`;
+export const applying = () => {
+  try {
+    return FileSystem.exists(APPLYING);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Opened while lineupd still swaps the files (it removes update/applying when done): waits for it. True when the
+ * swap finished, so this copy of the app is the old one and must open again; false when there was no swap, or
+ * the marker outlived any swap and was cleared.
+ */
+export async function finishUpdate() {
+  if (!applying()) return false;
+  for (let waited = 0; waited < 90000; waited += 500) {
+    await sleep(500);
+    if (!applying()) return true;
+  }
+  try {
+    FileSystem.remove(APPLYING);
+  } catch {
+    // Opening goes on either way.
+  }
+  return false;
 }
 
 /** After an update: what to tell the user, once (and ok-<version> is written), or ''. */

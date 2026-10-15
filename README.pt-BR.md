@@ -26,8 +26,8 @@ ordem na TV. Depois, o serviço local dele grava a nova ordem onde a tela inicia
 - **Ordenar de A a Z**, descartar mudanças e contagem de jogos que mudaram.
 - **Aplica ao sair.** Salvar fecha o app, e a tela inicial volta com a nova ordem. Não precisa
   reiniciar.
-- **Atualização no app.** O Lineup procura uma versão nova uma vez por dia (Opções → Atualizações
-  desliga isso), baixa quando você escolhe **Atualizar** e abre de novo na versão nova. Em Opções →
+- **Atualização no app.** O Lineup procura uma versão nova ao abrir e mostra as novidades (Opções →
+  Atualizações desliga isso), baixa quando você escolhe **Atualizar** e abre de novo na versão nova. Em Opções →
   Atualizações também dá para voltar à versão anterior. Vale a partir da 1.2.0.
 - **Inglês e português do Brasil**, escolhidos pelo idioma do sistema.
 

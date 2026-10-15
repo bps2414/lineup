@@ -36,19 +36,25 @@ if [ "$NO_EXFAT" != "--no-exfat" ]; then
   sudo umount "$MNT"; rmdir "$MNT"; [ -z "${LOOP:-}" ] || sudo losetup -d "$LOOP"
 fi
 
-# update.json, the in-app updater's manifest. The notes are this version's CHANGELOG.md section; there is no
-# Portuguese changelog, so pt-BR repeats the English text.
+# update.json, the in-app updater's manifest. The notes are this version's section of CHANGELOG.md and of
+# docs/pt-BR/NOVIDADES.md (English when the Portuguese one has none). The app's font has Latin text only, so
+# keep symbols like □ out of them.
 awk -v v="$VERSION" '/^## /{p = ($2 == v); next} p' "$ROOT/CHANGELOG.md" > "$STAGE/notes.md"
-python3 - "$DIST" "$VERSION" "$STAGE/notes.md" <<'EOF'
-import hashlib, json, os, sys
-dist, version, notes = sys.argv[1], sys.argv[2], open(sys.argv[3], encoding="utf-8").read().strip()
+awk -v v="$VERSION" '/^## /{p = ($2 == v); next} p' "$ROOT/docs/pt-BR/NOVIDADES.md" > "$STAGE/notes-pt.md"
+python3 - "$DIST" "$VERSION" "$STAGE/notes.md" "$STAGE/notes-pt.md" <<'EOF'
+import hashlib, json, os, re, sys
+dist, version = sys.argv[1], sys.argv[2]
+# The changelog wraps at 110 columns; the app wraps by itself, so continuation lines join their item.
+read = lambda path: re.sub(r"\n[ \t]+", " ", open(path, encoding="utf-8").read().strip())
+notes = read(sys.argv[3])
+notes_pt = read(sys.argv[4]) or notes
 def entry(name):
     digest = hashlib.sha256()
     with open(os.path.join(dist, name), "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             digest.update(chunk)
     return {"name": name, "size": os.path.getsize(os.path.join(dist, name)), "sha256": digest.hexdigest()}
-manifest = {"version": version, "notes": {"en": notes, "pt-BR": notes}, "zip": entry(f"Lineup-{version}.zip")}
+manifest = {"version": version, "notes": {"en": notes, "pt-BR": notes_pt}, "zip": entry(f"Lineup-{version}.zip")}
 if os.path.exists(os.path.join(dist, f"Lineup-{version}.exfat")):
     manifest["exfat"] = entry(f"Lineup-{version}.exfat")
 with open(os.path.join(dist, "update.json"), "w", encoding="utf-8") as f:

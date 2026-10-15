@@ -220,7 +220,8 @@ export function Button({label, onPress, autoFocus = false}) {
 }
 
 /** Centered question over the screen; buttons stack, the first takes focus. */
-export function Dialog({title, body, onBack, children}) {
+// `wide` is for long text (update notes): wider, and cut with … so the dialog never outgrows the 720 px screen.
+export function Dialog({title, body, wide, onBack, children}) {
   const back = () => {
     onBack();
     return true;
@@ -229,11 +230,13 @@ export function Dialog({title, body, onBack, children}) {
     <FocusScope trap autoFocus onBack={back} onAction={() => true}>
       <View className="absolute inset-0 items-center justify-center">
         <View className="absolute inset-0 bg-black/80" />
-        <motion.View className="w-[520px] rounded-2xl bg-surface border-2 border-line p-8 gap-7"
+        <motion.View className={`${wide ? 'w-[760px]' : 'w-[520px]'} rounded-2xl bg-surface border-2 border-line p-8 gap-7`}
           initial={{opacity: 0, y: 14}} animate={{opacity: 1, y: 0}} transition={slide}>
           <View className="gap-2.5">
             <Text className="font-inter text-sheet text-fg">{title}</Text>
-            {body ? <Text className="font-inter text-body text-muted">{body}</Text> : null}
+            {body ? (
+              <Text className="font-inter text-body text-muted" numberOfLines={wide ? 13 : undefined}>{body}</Text>
+            ) : null}
           </View>
           <View className="gap-2">{children}</View>
         </motion.View>

@@ -1,8 +1,16 @@
 # Changelog
 
+## 1.4.0
+
+- A new version opens on its own when Lineup starts, with its notes. Not now skips that version.
+- The notes fit the screen and come in Portuguese too.
+- Updating copies the installed version aside before the app closes, so the swap after it is quicker.
+  If you open Lineup before it is done, it waits and opens the new version by itself.
+- The new version finds its service already running, so it opens without replacing it.
+
 ## 1.3.0
 
-- Pinned games: □ pins the focused game at its place when you save. Opening other games no longer
+- Pinned games: Square pins the focused game at its place when you save. Opening other games no longer
   pushes it out; the rest of the row still follows the system's rule (the last game opened takes the
   first free place). A pin badge marks the game, a block marks it on the ruler, and the position reads
   "pinned at 3rd".

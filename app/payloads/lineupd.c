@@ -19,8 +19,9 @@
 //   POST /pins/uninstall         X-Lineup: 1; removes every pin, trigger and table Lineup added to app.db
 //   POST /quit                   X-Lineup: 1; exits after answering
 //   GET  /update/install         X-Lineup: 1; {"kind":"folder"|"image","path","previous"}
-//   POST /update/apply?version=<x.y.z|previous>  X-Lineup: 1; answers, waits for the app to close, swaps its
-//                                files for the downloaded ones (or the previous ones) and opens it again
+//   POST /update/apply?version=<x.y.z|previous>  X-Lineup: 1; backs up the installed folder first and answers
+//                                when that is done; then waits for the app to close, swaps its files for the
+//                                downloaded ones (or the previous ones), starts the installed lineupd.elf and opens the app
 //
 // Built with -DLINEUPD_DIAG (port 9078, LAN), also:
 //   GET    /diag                 avatars, homes, mounts, install candidates, SQLite version and strings
@@ -59,7 +60,7 @@
 #define LOG(fmt, ...) klog_printf("[lineupd] " fmt "\n", ##__VA_ARGS__)
 #endif
 
-#define LINEUPD_VERSION "1.3.0"
+#define LINEUPD_VERSION "1.4.0"
 #define TITLE_ID "PPSA99077"
 #ifdef LINEUPD_DIAG
 // Phase 0 diagnostic build (docs/pt-BR/PLANO-1.2.md): its own port, open to the LAN, so it runs beside the
@@ -640,7 +641,7 @@ static int remove_tree(const char* path) {
   return failed || rmdir(path) ? -1 : 0;
 }
 
-// Copies a file to `to`, created or truncated, and flushes it to the disk.
+// Copies a file to `to`, created or truncated. No fsync per file: callers sync() once when they are done.
 static int copy_file(const char* from, const char* to) {
   static char chunk[64 * 1024];
   int in = open(from, O_RDONLY), out = in < 0 ? -1 : open(to, O_WRONLY | O_CREAT | O_TRUNC, 0777);
@@ -648,7 +649,7 @@ static int copy_file(const char* from, const char* to) {
   for (ssize_t count; !failed && (count = read(in, chunk, sizeof chunk)) != 0;)
     failed = count < 0 || write(out, chunk, (size_t)count) != count;
   // The console's own services read a title's files, so they are open to every user.
-  if (!failed) failed = fchmod(out, 0777) || fsync(out);
+  if (!failed) failed = fchmod(out, 0777);
   if (in >= 0) close(in);
   if (out >= 0 && close(out)) failed = 1;
   return failed ? -1 : 0;
@@ -677,7 +678,7 @@ static int copy_tree(const char* from, const char* to) {
 }
 
 // Makes the directory `to` hold what `from` holds, one file at a time: each file is written beside the old one
-// as .<name>.new, flushed and renamed over it; then what `from` lacks is removed. `to` stays the same directory,
+// as .<name>.new and renamed over it; then what `from` lacks is removed. `to` stays the same directory,
 // so a mount of it (ShadowMountPlus mounts an app folder with nullfs) sees the new files.
 static int swap_tree(const char* from, const char* to) {
   if (mkdir(to, 0777) && errno != EEXIST) return -1;
@@ -1064,11 +1065,34 @@ static void post_update_apply(int socket, const char* query) {
       return;
     }
   }
+  if (!install.image) {
+    // Backed up now, while the app runs and shows its wait, so the swap after it closes is short. A folder
+    // install is copied in place later (never renamed: it is nullfs-mounted), so this copy is the way back.
+    char staged[256], saved[512];
+    snprintf(staged, sizeof staged, "%s/previous.new", update_dir);
+    snprintf(saved, sizeof saved, "%s/%s", staged, strrchr(install.path, '/') + 1);
+    int failed = remove_tree(staged);
+    if (!failed) { make_dirs(staged); failed = copy_tree(install.path, saved); }
+    if (failed) {
+      char message[600];
+      snprintf(message, sizeof message, "Could not back up the installed version (%s). Nothing changed.", strerror(errno));
+      remove_tree(staged);
+      respond_error(socket, 500, message);
+      return;
+    }
+    sync();
+  }
   update.pending = 1;
   update.rollback = rollback;
   update.install = install;
   snprintf(update.source, sizeof update.source, "%s", source);
   LOG("update to %s from %s, %s", version, source, install.path);
+  // Tells the app, when it opens, to wait until run_update is done.
+  char marker[256];
+  snprintf(marker, sizeof marker, "%s/applying", update_dir);
+  FILE* file = fopen(marker, "w");
+  if (file) { fputs(version, file); fclose(file); }
+  else LOG("could not write %s: %s", marker, strerror(errno));
   Buffer reply = {0};
   puts_(&reply, "{\"ok\":true}");
   respond_json(socket, 200, &reply);
@@ -1088,24 +1112,20 @@ static void update_failed(const char* format, ...) {
   if (file) { fputs(message, file); fclose(file); }
 }
 
-// Swaps the installed files for update.source. The installed version goes to update_dir/previous first; when
-// rolling back, previous/ itself is the source, so it moves aside to rollback/ until the swap is done.
+// Swaps the installed files for update.source. A folder install was copied to update_dir/previous.new when the
+// update was asked for; once swapped, that copy replaces previous/ (which holds the source when rolling back).
+// An image goes to previous/ as it is moved; a rollback leaves previous/ alone, as its source image is in it.
 static void replace_files(void) {
-  char previous[256], rollback[256], source[512], saved[512];
+  char previous[256], staged[256], saved[512];
   snprintf(previous, sizeof previous, "%s/previous", update_dir);
-  snprintf(rollback, sizeof rollback, "%s/rollback", update_dir);
-  snprintf(source, sizeof source, "%s", update.source);
+  snprintf(staged, sizeof staged, "%s/previous.new", update_dir);
+  const char* source = update.source;
   const char* installed = update.install.path;
-  if (update.rollback) {
-    remove_tree(rollback);
-    if (rename(previous, rollback)) { update_failed("Could not move the previous version aside (%s). Nothing changed.", strerror(errno)); return; }
-    snprintf(source, sizeof source, "%s/%s", rollback, strrchr(update.source, '/') + 1);
-  }
-  int failed = remove_tree(previous);
-  make_dirs(previous);
+  int image = update.install.image, failed = image && !update.rollback ? remove_tree(previous) : 0;
+  if (image) make_dirs(previous);
   snprintf(saved, sizeof saved, "%s/%s", previous, strrchr(installed, '/') + 1);
   if (failed) update_failed("Could not clear %s (%s). Nothing changed.", previous, strerror(errno));
-  else if (update.install.image) {
+  else if (image) {
     // ShadowMountPlus lets the image go when the app closes, unless persistent_image_mounts is on.
     for (int i = 0; i < 20 && image_mounted(installed); ++i) usleep(500 * 1000);
     char target[512];
@@ -1123,29 +1143,76 @@ static void replace_files(void) {
       // ShadowMountPlus looks every 15 s and takes a new source once it has been still for 10 s.
       sleep(25);
     }
-  } else if ((failed = copy_tree(installed, saved))) {
-    update_failed("Could not copy the installed version to %s (%s). Nothing changed.", saved, strerror(errno));
   } else if ((failed = swap_tree(source, installed))) {
+    snprintf(saved, sizeof saved, "%s/%s", staged, strrchr(installed, '/') + 1);
     int restored = !swap_tree(saved, installed);
     update_failed("Could not replace the files (%s). %s", strerror(errno),
                   restored ? "The installed version was put back." : "Copy the app folder again by FTP.");
+    remove_tree(staged);
+  } else if (remove_tree(previous) || rename(staged, previous)) {
+    LOG("could not keep the backup as %s: %s", previous, strerror(errno));
   }
-  if (update.rollback && failed) { remove_tree(previous); rename(rollback, previous); }
-  else if (update.rollback) remove_tree(rollback);
+  sync();
 }
 
-// What relauncher.c does: wait for the app to close, then open it again for the foreground user.
-static void run_update(void) {
+static void clear_applying(void) {
+  char marker[256];
+  snprintf(marker, sizeof marker, "%s/applying", update_dir);
+  unlink(marker);
+}
+
+// Waits for the app to close, then swaps the files. Returns 1 when lineupd should hand over to the installed
+// lineupd.elf; 0 when nothing changed. The caller ends with finish_update.
+static int run_update(void) {
   update.pending = 0;
-  char error[256];
+  char error[256], staged[256];
   snprintf(error, sizeof error, "%s/error", update_dir);
   unlink(error);
   for (int waited = 0; sceLncUtilGetAppId(TITLE_ID) >= 0; waited += 100) {
-    if (waited >= 30000) { update_failed("Lineup did not close within 30 seconds. Nothing changed."); return; }
+    if (waited >= 30000) {
+      update_failed("Lineup did not close within 30 seconds. Nothing changed.");
+      snprintf(staged, sizeof staged, "%s/previous.new", update_dir);
+      remove_tree(staged);
+      clear_applying();
+      return 0;
+    }
     usleep(100 * 1000);
   }
   usleep(500 * 1000);
   replace_files();
+  return 1;
+}
+
+// Sends the installed lineupd.elf to the ELF loader, which starts it. 0 once the whole file is out.
+static int hand_over(void) {
+  static char chunk[64 * 1024];
+  char path[300] = "/system_ex/app/" TITLE_ID "/lineupd.elf";
+  int in = open(path, O_RDONLY);
+  if (in < 0 && !update.install.image) {
+    snprintf(path, sizeof path, "%s/lineupd.elf", update.install.path);
+    in = open(path, O_RDONLY);
+  }
+  if (in < 0) { LOG("hand over: could not open %s: %s", path, strerror(errno)); return -1; }
+  int out = socket(AF_INET, SOCK_STREAM, 0), failed = out < 0;
+  struct sockaddr_in loader = {0};
+  loader.sin_family = AF_INET;
+  loader.sin_port = htons(9021);
+  loader.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (!failed) failed = connect(out, (struct sockaddr*)&loader, sizeof loader);
+  for (ssize_t count; !failed && (count = read(in, chunk, sizeof chunk)) != 0;)
+    failed = count < 0 || send_all(out, chunk, (size_t)count);
+  if (failed) LOG("hand over: could not send %s to the loader: %s", path, strerror(errno));
+  close(in);
+  if (out >= 0) close(out);
+  return failed ? -1 : 0;
+}
+
+// What relauncher.c does, after the swap: open the app again for the foreground user. The marker goes first, so
+// an app the user reopened early (it waits on the marker, then relaunches itself) is not launched twice.
+static void finish_update(void) {
+  int open_now = sceLncUtilGetAppId(TITLE_ID) >= 0;
+  clear_applying();
+  if (open_now) { LOG("%s is already open; it relaunches itself", TITLE_ID); return; }
   sceUserServiceInitialize(NULL);
   LncAppParam param = {sizeof param, 0, 0, 0, 0};
   sceUserServiceGetForegroundUser((int*)&param.user_id);
@@ -1530,12 +1597,8 @@ static int handle(int socket) {
   return 0;
 }
 
-int main(void) {
-  signal(SIGPIPE, SIG_IGN);
-  // The loader hands over its connection as stdio; let it go so the service outlives the sender.
-  int null = open("/dev/null", O_RDWR);
-  if (null >= 0) { dup2(null, 0); dup2(null, 1); dup2(null, 2); if (null > 2) close(null); }
-
+// The listening socket on PORT, or -1.
+static int listen_on_port(void) {
   int server = socket(AF_INET, SOCK_STREAM, 0);
   int yes = 1;
   setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
@@ -1549,9 +1612,21 @@ int main(void) {
 #endif
   if (server < 0 || bind(server, (struct sockaddr*)&address, sizeof address) || listen(server, 8)) {
     LOG("listen on %d failed: %s; another lineupd is probably running", PORT, strerror(errno));
-    return 0;
+    if (server >= 0) close(server);
+    return -1;
   }
   LOG("version %s listening on %d", LINEUPD_VERSION, PORT);
+  return server;
+}
+
+int main(void) {
+  signal(SIGPIPE, SIG_IGN);
+  // The loader hands over its connection as stdio; let it go so the service outlives the sender.
+  int null = open("/dev/null", O_RDWR);
+  if (null >= 0) { dup2(null, 0); dup2(null, 1); dup2(null, 2); if (null > 2) close(null); }
+
+  int server = listen_on_port();
+  if (server < 0) return 0;
   for (int quit = 0; !quit;) {
     int client = accept(server, NULL, NULL);
     if (client < 0) { if (errno == EINTR) continue; break; }
@@ -1561,7 +1636,16 @@ int main(void) {
     quit = handle(client);
     close(client);
     // After the answer is out: the app closes once it has it.
-    if (update.pending) run_update();
+    if (update.pending && run_update()) {
+      // The port is closed before the new lineupd starts, and the app opens after it is out, so the app finds
+      // the new version at once. If the loader cannot be reached, keep serving.
+      close(server);
+      int handed = !hand_over();
+      if (handed) usleep(300 * 1000);
+      else server = listen_on_port();
+      finish_update();
+      if (handed || server < 0) { server = -1; break; }
+    }
   }
   close(server);
   LOG("exit");
