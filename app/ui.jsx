@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Fileira's interface pieces: the mark, controller glyphs, button hints, the lift light, the side sheet,
+// Lineup's interface pieces: the mark, controller glyphs, button hints, the lift light, the side sheet,
 // dialogs, buttons, full-screen messages and the toast. Black and white only.
 import {useEffect} from 'react';
 import {Animated, Circle, Easing, FocusScope, Path, Rect, Svg, Text, View, motion, transitions,

@@ -1,9 +1,9 @@
 {
-  "$schema": "../../app.schema.json",
+  "$schema": "../ps5-react/app.schema.json",
   "titleId": "PPSA99077",
-  "contentId": "UP9000-PPSA99077_00-FILEIRA000000000",
-  "name": "Fileira",
-  "version": "01.000.000",
+  "contentId": "UP9000-PPSA99077_00-LINEUP0000000000",
+  "name": "Lineup",
+  "version": "01.001.000",
   "render": {
     "width": 1920,
     "height": 1080

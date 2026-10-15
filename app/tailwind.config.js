@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Fileira is black and white only: one canvas, two raised surfaces, a hairline and three text greys.
+// Lineup is black and white only: one canvas, two raised surfaces, a hairline and three text greys.
 export default {theme: {extend: {
   colors: {
     canvas: '#000000', surface: '#17171a', surface2: '#212125', line: '#2a2a2f',

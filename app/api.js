@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Talks to fileirad (payloads/fileirad.c) on 127.0.0.1:9077 and starts it when it is not running.
+// Talks to lineupd (payloads/lineupd.c) on 127.0.0.1:9077 and starts it when it is not running.
 import {Http, Payloads} from '@ps5-react/core';
+import {T} from './i18n.js';
 
-export const VERSION = '1.0.1';
+export const VERSION = '1.1.0';
 const BASE = 'http://127.0.0.1:9077';
 
 /** An error the app shows as is: a short title and what to do about it. */
@@ -14,6 +15,7 @@ export class Problem extends Error {
   }
 }
 
+const problem = ([title, detail]) => new Problem(title, detail);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // Http.request takes any object shaped like an AbortSignal; QuickJS has no AbortController.
@@ -36,7 +38,7 @@ async function call(path, {method = 'GET', body, timeoutMs} = {}) {
   try {
     const response = await Http.request(BASE + path, {
       method, body, maxBytes: 1024 * 1024, signal: limit?.signal,
-      headers: method === 'POST' ? {'X-Fileira': '1', 'Content-Type': 'text/plain; charset=utf-8'} : undefined,
+      headers: method === 'POST' ? {'X-Lineup': '1', 'Content-Type': 'text/plain; charset=utf-8'} : undefined,
     });
     let data = {};
     try {
@@ -52,8 +54,8 @@ async function call(path, {method = 'GET', body, timeoutMs} = {}) {
 
 async function version() {
   try {
-    const {ok, data} = await call('/versao', {timeoutMs: 1500});
-    return ok ? data.versao ?? '' : '';
+    const {ok, data} = await call('/version', {timeoutMs: 1500});
+    return ok ? data.version ?? '' : '';
   } catch {
     return null;
   }
@@ -64,58 +66,54 @@ export async function ensureService(onStep) {
   let running = await version();
   if (running === VERSION) return;
   if (running !== null) {
-    onStep('Trocando o serviço por esta versão');
-    await call('/sair', {method: 'POST', timeoutMs: 1500}).catch(() => {});
+    onStep(T.service.replacing);
+    // A service from before the rename answers /versao and quits on /sair.
+    await call('/quit', {method: 'POST', timeoutMs: 1500}).catch(() => {});
+    await Http.request(`${BASE}/sair`, {method: 'POST', headers: {'X-Fileira': '1'}}).catch(() => {});
     await sleep(400);
   }
-  onStep('Abrindo o serviço');
-  if (typeof Payloads?.start !== 'function') {
-    throw new Problem('Este build não abre o serviço',
-      'Falta a chamada Payloads.start no ps5-react. Gere o app de novo com a versão atual do framework.');
-  }
-  const started = Payloads.start('fileirad.elf');
-  if (!started.ok) {
-    throw new Problem('O serviço não abriu',
-      `O ELF loader não aceitou o fileirad.elf (${started.error}). Confira se ele está ativo na porta 9021.`);
-  }
+  onStep(T.service.starting);
+  if (typeof Payloads?.start !== 'function') throw problem(T.service.noApi);
+  const started = Payloads.start('lineupd.elf');
+  if (!started.ok) throw problem(T.service.notStarted(started.error));
   for (let waited = 0; waited < 5000; waited += 250) {
     await sleep(250);
     running = await version();
     if (running === VERSION) return;
   }
-  throw new Problem('O serviço não respondeu',
-    'O fileirad.elf foi enviado, mas não respondeu em 5 segundos. Tente de novo em alguns instantes.');
+  throw problem(T.service.noAnswer);
 }
 
+// The service's own message is English detail; the title is always in the interface language.
 async function read(path, what) {
   let reply;
   try {
     reply = await call(path, {timeoutMs: 8000});
   } catch {
-    throw new Problem('O serviço parou de responder', `Não consegui ler ${what}. Tente de novo.`);
+    throw problem(T.service.stopped(what));
   }
-  if (!reply.ok) throw new Problem(`Não consegui ler ${what}`, reply.data.error ?? `O serviço respondeu ${reply.status}.`);
+  if (!reply.ok) throw new Problem(T.service.readFailed(what), reply.data.error ?? T.service.status(reply.status));
   return reply.data;
 }
 
-export const profiles = async () => (await read('/perfis', 'os perfis')).perfis ?? [];
-export const row = async user => (await read(`/fileira?user=${user}`, 'a fileira')).jogos ?? [];
-export const iconUrl = game => `${BASE}/icone/${game.titleId}?m=${game.icone}`;
+export const profiles = async () => (await read('/profiles', T.service.profiles)).profiles ?? [];
+export const row = async user => (await read(`/row?user=${user}`, T.service.row)).games ?? [];
+export const iconUrl = game => `${BASE}/icon/${game.titleId}?m=${game.icon}`;
 
 /**
  * Saves `order` (titleIds) for `user`, sending each game's index as it was read. Resolves to
  * {ok: true} or {ok: false, stale, message}; `stale` means the row changed since it was read.
  */
 export async function save(user, order, games) {
-  const body = `FIL1\n${order.map(id => `${id} ${games[id].indice}\n`).join('')}`;
+  const body = `LIN1\n${order.map(id => `${id} ${games[id].index}\n`).join('')}`;
   let reply;
   try {
-    reply = await call(`/fileira?user=${user}`, {method: 'POST', body});
+    reply = await call(`/row?user=${user}`, {method: 'POST', body});
   } catch {
-    return {ok: false, stale: false,
-      message: 'O serviço não respondeu ao salvar. Abra o app de novo para conferir a ordem.'};
+    return {ok: false, stale: false, message: T.service.saveNoAnswer};
   }
   if (reply.ok) return {ok: true};
-  return {ok: false, stale: reply.status === 409,
-    message: reply.data.error ?? `O serviço respondeu ${reply.status}. Nada foi gravado.`};
+  if (reply.status === 409) return {ok: false, stale: true, message: T.service.stale};
+  const detail = reply.data.error ? ` (${reply.data.error})` : '';
+  return {ok: false, stale: false, message: T.service.saveStatus(reply.status) + detail};
 }

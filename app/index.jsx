@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Fileira reorders the PS5 home-screen game row. The fileirad service (payloads/fileirad.c) reads and
+// Lineup reorders the PS5 home-screen game row. The lineupd service (payloads/lineupd.c) reads and
 // saves the row; this app draws it, lifts the focused game with X and carries it with the D-pad.
 //
 // Focus lives on invisible slots, one per position, laid out in a plain row so the focus manager moves
@@ -11,6 +11,7 @@ import {AnimatePresence, AppRegistry, BackHandler, Controller, FocusScope, Image
   motion, useFocusActions} from '@ps5-react/core';
 import {useInterfaceSounds} from './sounds.js';
 import * as api from './api.js';
+import {T} from './i18n.js';
 import {BOTTOM, DIGITS, EM, TOP} from './digits.js';
 import {Badge, Button, C, Dialog, Hints, LiftLight, Mark, Message, Sheet, SheetItem, SheetRule, Toast, Wash,
   px} from './ui.jsx';
@@ -33,7 +34,6 @@ const HOME_LIMIT = 12;
 const SPRING = {type: 'spring', stiffness: 420, damping: 40};
 const TILE = {...SPRING, opacity: {type: 'tween', duration: 0.14}};
 
-const ordinal = n => `${n}º`;
 const sortKey = name => name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 const changed = s => s.order.reduce((count, id, i) => count + (s.home[id] !== i), 0);
 
@@ -67,7 +67,7 @@ const Tile = memo(function Tile({game, index, place, lifted, moved}) {
       <motion.View className="absolute left-0 top-0 w-[128px] h-[128px] origin-top-left" initial={false}
         animate={{scale: focused ? BIG / SMALL : 1, opacity: focused ? 0 : 1}} transition={TILE}>
         <View className="absolute inset-0 rounded-[10px] bg-surface p-3 justify-end">
-          <Text className="font-inter text-hint text-subtle line-clamp-3">{game.nome}</Text>
+          <Text className="font-inter text-hint text-subtle line-clamp-3">{game.name}</Text>
         </View>
         <Image source={{uri}} className="absolute inset-0 rounded-[10px]" />
         <View className={place === 'before' ? 'absolute inset-0 rounded-[10px] bg-black/75'
@@ -77,7 +77,7 @@ const Tile = memo(function Tile({game, index, place, lifted, moved}) {
         animate={{x: shiftX + PAD - PAD * scale, y: shiftY + PAD - PAD * scale, scale, opacity: focused ? 1 : 0}}
         transition={TILE}>
         <View className="absolute left-2 top-2 w-[168px] h-[168px] rounded-xl bg-surface p-4 justify-end">
-          <Text className="font-inter text-small text-subtle line-clamp-3">{game.nome}</Text>
+          <Text className="font-inter text-small text-subtle line-clamp-3">{game.name}</Text>
         </View>
         <Image source={{uri}} className="absolute left-2 top-2 w-[168px] h-[168px] rounded-xl" />
         {focused && !lifted ? <View className="absolute inset-0 rounded-[20px] border-[3px] border-fg" /> : null}
@@ -178,13 +178,13 @@ function Position({s}) {
   const game = s.games[id];
   const was = s.home[id];
   const notes = [];
-  if (was !== s.focus) notes.push(`antes em ${ordinal(was + 1)}`);
-  if (s.focus >= HOME_LIMIT) notes.push('fora da tela inicial');
+  if (was !== s.focus) notes.push(T.before(was + 1));
+  if (s.focus >= HOME_LIMIT) notes.push(T.offHome);
   const note = notes.join(', ');
   return (
     <>
       <Text className="absolute left-16 top-[354px] w-[1000px] font-inter text-title text-fg truncate">
-        {game.nome}
+        {game.name}
       </Text>
       <View className="absolute left-16 bottom-[52px] flex-row items-end gap-6">
         <motion.View key={s.focus + 1} initial={{opacity: 0, x: 26 * s.dir}} animate={{opacity: 1, x: 0}}
@@ -193,7 +193,7 @@ function Position({s}) {
         </motion.View>
         <View className="gap-1">
           <Text className="font-inter text-small text-subtle">{note || ' '}</Text>
-          <Text className="font-inter text-of text-muted">de {s.order.length}</Text>
+          <Text className="font-inter text-of text-muted">{T.of(s.order.length)}</Text>
         </View>
       </View>
     </>
@@ -204,17 +204,18 @@ function Header({name}) {
   return (
     <View className="absolute left-16 top-10 flex-row items-center gap-4">
       <Mark />
-      <Text className="font-inter text-head text-fg">Fileira</Text>
+      <Text className="font-inter text-head text-fg">Lineup</Text>
       {name ? <Text className="font-inter text-head text-muted">{name}</Text> : null}
     </View>
   );
 }
 
-const ROW_HINTS = [['cross', 'Levantar'], ['triangle', 'Salvar'], ['options', 'Opções'], ['circle', 'Sair']];
-const LIFT_HINTS = [['dpad', 'Mover'], ['cross', 'Soltar'], ['circle', 'Cancelar']];
-const PICK_HINTS = [['cross', 'Escolher'], ['circle', 'Voltar']];
+const H = T.hints;
+const ROW_HINTS = [['cross', H.lift], ['triangle', H.save], ['options', H.options], ['circle', H.quit]];
+const LIFT_HINTS = [['dpad', H.move], ['cross', H.drop], ['circle', H.cancel]];
+const PICK_HINTS = [['cross', H.choose], ['circle', H.back]];
 
-const START = {phase: 'loading', step: 'Procurando o serviço', error: null, profiles: [], user: null,
+const START = {phase: 'loading', step: T.service.looking, error: null, profiles: [], user: null,
   games: {}, home: {}, base: [], order: [], focus: 0, dir: 1, lifted: false, liftFrom: 0, layer: null,
   target: null, toast: null, pending: null};
 
@@ -228,7 +229,7 @@ function App() {
 
   const dirty = s.phase === 'row' && changed(s) > 0;
   useLayoutEffect(() => {
-    globalThis.__fileiraState = {phase: s.phase, focus: s.focus, lifted: s.lifted, dirty, count: s.order.length,
+    globalThis.__lineupState = {phase: s.phase, focus: s.focus, lifted: s.lifted, dirty, count: s.order.length,
       layer: s.layer};
   }, [s.phase, s.focus, s.lifted, dirty, s.order.length, s.layer]);
 
@@ -261,15 +262,15 @@ function App() {
   };
 
   const loadRow = async (user, profiles) => {
-    const jogos = await api.row(user);
-    if (!jogos.length) throw new api.Problem('A fileira está vazia', 'Este perfil não tem jogos na tela inicial.');
+    const list = await api.row(user);
+    if (!list.length) throw new api.Problem(...T.emptyRow);
     const games = {};
     const home = {};
-    jogos.forEach((game, i) => {
+    list.forEach((game, i) => {
       games[game.titleId] = game;
       home[game.titleId] = i;
     });
-    const base = jogos.map(game => game.titleId);
+    const base = list.map(game => game.titleId);
     light(false);
     patch({phase: 'row', profiles, user, games, home, base, order: base, focus: 0, dir: 1, lifted: false,
       layer: null, target: null, pending: {index: 0}});
@@ -281,14 +282,14 @@ function App() {
       await api.ensureService(step => patch({step}));
       const profiles = await api.profiles();
       if (!profiles.length) {
-        throw new api.Problem('Nenhum perfil encontrado', 'O serviço não achou perfis com fileira na tela inicial.');
+        throw new api.Problem(...T.noProfiles);
       }
       const foreground = Users.getForeground();
       const id = foreground ? String(foreground.id >>> 0).padStart(10, '0') : '';
       await loadRow((profiles.find(profile => profile.userId === id) ?? profiles[0]).userId, profiles);
     } catch (error) {
       patch({phase: 'error', error: error instanceof api.Problem ? error
-        : {title: 'Algo deu errado ao abrir', detail: String(error?.message ?? error)}});
+        : {title: T.openFailed, detail: String(error?.message ?? error)}});
     }
   };
   useEffect(() => {
@@ -310,7 +311,7 @@ function App() {
     const now = ref.current;
     if (!changed(now)) {
       close();
-      toast('A ordem já está salva.');
+      toast(T.alreadySaved);
       return;
     }
     light(false);
@@ -318,7 +319,7 @@ function App() {
     const result = await api.save(now.user, now.order, now.games);
     if (result.ok) {
       if (next) {
-        toast('Ordem salva.');
+        toast(T.savedToast);
         next();
       } else patch({phase: 'saved', layer: null});
       return;
@@ -379,13 +380,13 @@ function App() {
 
   const discard = () => {
     patch(p => ({order: p.base, layer: null, pending: {index: 0}}));
-    toast('Mudanças descartadas.');
+    toast(T.discarded);
   };
   const sortAZ = () => patch(p => {
     const id = p.order[p.focus];
     const order = p.order.slice().sort((a, b) => {
-      const x = sortKey(p.games[a].nome);
-      const y = sortKey(p.games[b].nome);
+      const x = sortKey(p.games[a].name);
+      const y = sortKey(p.games[b].name);
       return x < y ? -1 : x > y ? 1 : 0;
     });
     return {order, layer: null, pending: {index: order.indexOf(id)}};
@@ -405,7 +406,7 @@ function App() {
         <Wash />
         <View className="absolute left-16 top-[300px] gap-5">
           <Mark breathing />
-          <Text className="font-inter text-big text-fg">Fileira</Text>
+          <Text className="font-inter text-big text-fg">Lineup</Text>
           <Text className="font-inter text-body text-muted">{s.step}</Text>
         </View>
       </View>
@@ -420,21 +421,21 @@ function App() {
     return (
       <View className="w-screen h-screen bg-canvas">
         <Wash />
-        <Header name={profile?.nome} />
+        <Header name={profile?.name} />
         <FocusScope autoFocus onBack={back} onAction={() => true}>
           {saved ? (
-            <Message icon={<Badge kind="ok" />} title="Ordem salva"
-              body="Fechando o app. A tela inicial já volta com a nova ordem.">
-              <Button label="Fechar agora" autoFocus onPress={exit} />
+            <Message icon={<Badge kind="ok" />} title={T.saved[0]}
+              body={T.saved[1]}>
+              <Button label={T.closeNow} autoFocus onPress={exit} />
             </Message>
           ) : (
             <Message icon={<Badge kind="error" />} title={s.error.title} body={s.error.detail}>
-              <Button label="Tentar de novo" autoFocus onPress={boot} />
-              <Button label="Fechar app" onPress={exit} />
+              <Button label={T.retry} autoFocus onPress={boot} />
+              <Button label={T.closeApp} onPress={exit} />
             </Message>
           )}
         </FocusScope>
-        <Hints items={[['cross', 'Escolher'], ['circle', 'Fechar']]} />
+        <Hints items={[['cross', H.choose], ['circle', H.close]]} />
       </View>
     );
   }
@@ -444,7 +445,7 @@ function App() {
   return (
     <View className="w-screen h-screen bg-canvas">
       <Wash />
-      <Header name={profile?.nome} />
+      <Header name={profile?.name} />
       <FocusScope row autoFocus onBack={onBack} onAction={onAction}>
         <Slots count={s.order.length} onFocusIndex={onFocusIndex} onPressIndex={onPressIndex} />
       </FocusScope>
@@ -455,36 +456,35 @@ function App() {
         // One sheet for both pages, so it stays put and still knows which game to give focus back to.
         <Sheet page={s.layer} onClose={close}
           onBack={() => (s.layer === 'profiles' ? patch({layer: 'menu'}) : close())}
-          title={s.layer === 'menu' ? 'Opções' : 'Trocar perfil'}
-          subtitle={s.layer === 'menu' ? profile?.nome : 'Cada perfil tem a sua fileira'}>
+          title={s.layer === 'menu' ? T.menu.title : T.profilesTitle}
+          subtitle={s.layer === 'menu' ? profile?.name : T.profilesSubtitle}>
           {s.layer === 'menu' ? [
-            <SheetItem key="save" label="Salvar ordem" onPress={() => save()}
-              detail={count ? `${count} ${count === 1 ? 'mudança' : 'mudanças'}` : 'sem mudanças'} />,
-            <SheetItem key="discard" label="Descartar mudanças" onPress={discard} />,
-            <SheetItem key="sort" label="Ordenar de A a Z" onPress={sortAZ} />,
+            <SheetItem key="save" label={T.menu.save} onPress={() => save()}
+              detail={T.menu.changes(count)} />,
+            <SheetItem key="discard" label={T.menu.discard} onPress={discard} />,
+            <SheetItem key="sort" label={T.menu.sort} onPress={sortAZ} />,
             <SheetRule key="rule" />,
-            <SheetItem key="profiles" label="Trocar perfil" onPress={() => patch({layer: 'profiles'})}
-              detail={s.profiles.length > 1 ? `${s.profiles.length} perfis` : ''} />,
+            <SheetItem key="profiles" label={T.menu.profiles} onPress={() => patch({layer: 'profiles'})}
+              detail={s.profiles.length > 1 ? T.menu.profileCount(s.profiles.length) : ''} />,
           ] : s.profiles.map(item => (
-            <SheetItem key={item.userId} label={item.nome} checked={item.userId === s.user}
+            <SheetItem key={item.userId} label={item.name} checked={item.userId === s.user}
               autoFocus={item.userId === s.user} onPress={() => pickProfile(item.userId)} />
           ))}
         </Sheet>
       ) : null}
       {s.layer === 'exit' ? (
-        <Dialog title="Salvar a nova ordem antes de sair?" onBack={close}
-          body={count === 1 ? 'Um jogo mudou de lugar.' : `${count} jogos mudaram de lugar.`}>
-          <Button label="Salvar e sair" onPress={() => save()} />
-          <Button label="Sair sem salvar" onPress={exit} />
-          <Button label="Voltar" onPress={close} />
+        <Dialog title={T.exitDialog.title} onBack={close} body={T.exitDialog.body(count)}>
+          <Button label={T.exitDialog.save} onPress={() => save()} />
+          <Button label={T.exitDialog.discard} onPress={exit} />
+          <Button label={T.exitDialog.back} onPress={close} />
         </Dialog>
       ) : null}
       {s.layer === 'switch' ? (
-        <Dialog title="Trocar de perfil?" body="A nova ordem deste perfil ainda não foi salva."
+        <Dialog title={T.switchDialog.title} body={T.switchDialog.body}
           onBack={() => patch({layer: 'profiles'})}>
-          <Button label="Salvar e trocar" onPress={() => save(() => switchTo(s.target))} />
-          <Button label="Trocar sem salvar" onPress={() => switchTo(s.target)} />
-          <Button label="Voltar" onPress={() => patch({layer: 'profiles'})} />
+          <Button label={T.switchDialog.save} onPress={() => save(() => switchTo(s.target))} />
+          <Button label={T.switchDialog.discard} onPress={() => switchTo(s.target)} />
+          <Button label={T.switchDialog.back} onPress={() => patch({layer: 'profiles'})} />
         </Dialog>
       ) : null}
       {s.layer === 'busy' ? (
@@ -492,7 +492,7 @@ function App() {
           <View className="absolute inset-0 bg-black/70 items-center justify-center">
             <View focusable className="flex-row items-center gap-4 rounded-2xl bg-surface border-2 border-line px-8 py-6">
               <Mark breathing />
-              <Text className="font-inter text-body text-fg">Um momento</Text>
+              <Text className="font-inter text-body text-fg">{T.busy}</Text>
             </View>
           </View>
         </FocusScope>
@@ -503,4 +503,4 @@ function App() {
   );
 }
 
-AppRegistry.registerComponent('fileira', () => App);
+AppRegistry.registerComponent('lineup', () => App);

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Additional attribution term: see LICENSE-ATTRIBUTION.
 // Interface sounds, from apps/starter. The WAVs are derived from Google's Material Design sound
-// resources (CC BY 4.0; see assets/sounds/NOTICE.txt). Fileira only buzzes at the row's ends: Up and
+// resources (CC BY 4.0; see assets/sounds/NOTICE.txt). Lineup only buzzes at the row's ends: Up and
 // Down have nowhere to go on the main screen and stay silent.
 import {Sound, useNavigationEvents} from '@ps5-react/core';
 import focus from './assets/sounds/focus.wav';
