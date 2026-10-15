@@ -26,7 +26,7 @@ jobs:
       - name: Install prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake git curl unzip zip xz-utils binutils \
+          sudo apt-get install -y build-essential cmake git curl unzip zip xz-utils zstd binutils \
             python3-venv llvm-18 llvm-18-dev clang-18 lld-18 libssl-dev exfatprogs
       - uses: actions/setup-node@v4
         with:

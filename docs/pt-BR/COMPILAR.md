@@ -8,7 +8,7 @@ payloads do PS5 etc.) em `ps5-react/.deps`.
 ## Pré-requisitos
 
 ```sh
-sudo apt-get install -y build-essential cmake git curl unzip zip xz-utils binutils \
+sudo apt-get install -y build-essential cmake git curl unzip zip xz-utils zstd binutils \
   python3-venv llvm-18 llvm-18-dev clang-18 lld-18 libssl-dev
 sudo apt-get install -y exfatprogs   # só para a imagem .exfat
 ```

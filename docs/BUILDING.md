@@ -7,7 +7,7 @@ Linux (Ubuntu 24.04 is what CI uses) or WSL. The build downloads pinned, hash-ch
 ## Prerequisites
 
 ```sh
-sudo apt-get install -y build-essential cmake git curl unzip zip xz-utils binutils \
+sudo apt-get install -y build-essential cmake git curl unzip zip xz-utils zstd binutils \
   python3-venv llvm-18 llvm-18-dev clang-18 lld-18 libssl-dev
 sudo apt-get install -y exfatprogs   # only for the .exfat image
 ```

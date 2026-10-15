@@ -87,6 +87,8 @@ def main():
         entries = subprocess.check_output(["ar", "t", str(deb)], text=True).splitlines()
         name = next(x for x in entries if x.startswith("data.tar"))
         data = subprocess.check_output(["ar", "p", str(deb), name])
+        if name.endswith(".zst"):  # tarfile reads no zstd before Python 3.14
+            data = subprocess.run(["zstd", "-dc"], input=data, capture_output=True, check=True).stdout
         with tarfile.open(fileobj=io.BytesIO(data)) as package:
             member = next(m for m in package.getmembers() if m.name.endswith("/libclang_rt.builtins-x86_64.a"))
             builtins.write_bytes(package.extractfile(member).read())
