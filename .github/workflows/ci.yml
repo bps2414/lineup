@@ -1,0 +1,36 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git curl unzip zip xz-utils binutils \
+            python3-venv llvm-18 llvm-18-dev clang-18 lld-18 libssl-dev exfatprogs
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache@v4
+        with:
+          path: ps5-react/.deps
+          key: deps-${{ hashFiles('ps5-react/dependencies.lock.json') }}
+      - run: scripts/test.sh
+      - run: scripts/build.sh
+      - name: Package
+        run: |
+          V="$(sed -n "s/^export const VERSION = '\(.*\)';/\1/p" app/api.js)"
+          scripts/package.sh "${V}-ci.$(git rev-parse --short HEAD)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lineup-dist
+          path: dist/*

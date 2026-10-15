@@ -1,0 +1,48 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+      - name: Check tag against versions in the source
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          A="$(sed -n "s/^export const VERSION = '\(.*\)';/\1/p" app/api.js)"
+          C="$(sed -n 's/^#define LINEUPD_VERSION "\(.*\)"/\1/p' app/payloads/lineupd.c)"
+          if [ "$V" != "$A" ] || [ "$V" != "$C" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match app/api.js VERSION ($A) and lineupd.c LINEUPD_VERSION ($C)"
+            exit 1
+          fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git curl unzip zip xz-utils binutils \
+            python3-venv llvm-18 llvm-18-dev clang-18 lld-18 libssl-dev exfatprogs
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache@v4
+        with:
+          path: ps5-react/.deps
+          key: deps-${{ hashFiles('ps5-react/dependencies.lock.json') }}
+      - run: scripts/test.sh
+      - run: scripts/build.sh
+      - run: scripts/package.sh "$VERSION"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          awk -v v="$VERSION" '/^## /{p = ($2 == v)} p' CHANGELOG.md > notes.md 2>/dev/null || true
+          if [ -s notes.md ]; then N=(--notes-file notes.md); else N=(--generate-notes); fi
+          gh release create "$GITHUB_REF_NAME" dist/* --title "Lineup $VERSION" "${N[@]}"
