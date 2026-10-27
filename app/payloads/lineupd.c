@@ -60,7 +60,7 @@
 #define LOG(fmt, ...) klog_printf("[lineupd] " fmt "\n", ##__VA_ARGS__)
 #endif
 
-#define LINEUPD_VERSION "1.4.1"
+#define LINEUPD_VERSION "1.4.2"
 #define TITLE_ID "PPSA99077"
 #ifdef LINEUPD_DIAG
 // Phase 0 diagnostic build (docs/pt-BR/PLANO-1.2.md): its own port, open to the LAN, so it runs beside the
@@ -73,6 +73,8 @@
 #define MAX_HEADER (16 * 1024)
 #define MAX_BODY (64 * 1024)
 #define MAX_GAMES 512
+// The home screen shows this many games of the row, as HOME_LIMIT in app/index.jsx.
+#define HOME_LIMIT 12
 #define KEEP_BACKUPS 5
 
 static const char* db_path = "/system_data/priv/mms/app.db";
@@ -495,6 +497,14 @@ done:
 // Saves `posted` as the new order. Returns the HTTP status; `message` explains a failure.
 static int save_order(const char* user, const Row* posted, int posted_count, char* backup, size_t backup_size,
                       char* integrity, size_t integrity_size, char* message, size_t message_size) {
+  // With every home place pinned, the last game opened (the jailbreak's entry, say) gets no place there and ends up
+  // in the game library: one stays free.
+  int home = posted_count < HOME_LIMIT ? posted_count : HOME_LIMIT, free_places = 0;
+  for (int i = 0; i < home; ++i) free_places += !posted[i].pinned;
+  if (home && !free_places) {
+    snprintf(message, message_size, "Leave one of the first %d places unpinned. Nothing was saved.", home);
+    return 400;
+  }
   sqlite3* db = open_db(1);
   if (!db) { snprintf(message, message_size, "Could not open the home screen database."); return 500; }
   int status = 500;
@@ -1732,6 +1742,17 @@ static void test_pins(void) {
   const char* one = "0000000001";
   int slots[MAX_GAMES];
   given = scalar("SELECT MAX(lastAccessIndex) FROM tbl_iconinfo_0000000001");
+  // A row pinned in full is refused: one home place stays free.
+  {
+    static Row full[MAX_GAMES];
+    sqlite3* db = open_db(0);
+    int count = read_row(db, one, full, NULL, MAX_GAMES);
+    sqlite3_close(db);
+    for (int i = 0; i < count; ++i) full[i].pinned = 1;
+    char backup[256], integrity[256], message[300];
+    assert(save_order(one, full, count, backup, sizeof backup, integrity, sizeof integrity, message, sizeof message) == 400);
+    assert(!strcmp(pins_of(one, slots), "off"));
+  }
   save_digits(one, "31254", "35");
   expect_row(one, "31254");
   assert(!strcmp(pins_of(one, slots), "on") && slots[0] == 0 && slots[1] < 0 && slots[3] == 3);

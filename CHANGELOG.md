@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.2
+
+- One place on the home screen always stays unpinned. With every place pinned, the last game opened (the
+  jailbreak's entry, say) had nowhere to go and ended up in the game library. Pin the whole row now leaves the
+  first place free, and Lineup will not save a home screen pinned in full.
+- A row pinned in full by an older version opens with an offer to free its first place.
+
 ## 1.4.1
 
 1.4.0 was not released; its changes ship here.

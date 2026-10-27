@@ -81,7 +81,7 @@ carry `X-Lineup: 1`, so a web page cannot trigger one with a plain form.
 
 Errors are `{"error": "<English detail>"}`:
 
-- 400: malformed request.
+- 400: malformed request, or every home place pinned (see Pinned games).
 - 403: the `X-Lineup` header is missing.
 - 404: no such profile or icon.
 - 409: the row changed since it was read.
@@ -103,6 +103,11 @@ CTEs, window functions, UPSERT and `RETURNING`.
 Saving drops the profile's triggers, writes the order and the pins, and creates the triggers again when there
 are pins, all in one transaction. When the last pin of every profile is gone, the tables go too. Rebuilding the
 database can drop the triggers; `/row` then says `"missing"` and the app offers to pin the games again.
+
+One of the first `HOME_LIMIT` (12) places always stays unpinned: with all of them pinned, the last game opened,
+such as the jailbreak's entry, has no place on the home screen and ends up in the game library. The app keeps it
+free (Pin the whole row leaves the first place) and offers to free the first place of a row pinned in full by
+1.4.1 or older; `save_order` refuses such a row with 400.
 
 ## Updates
 

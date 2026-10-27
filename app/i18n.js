@@ -53,6 +53,11 @@ const en = {
     missingBody: 'The home screen database was rebuilt or updated, so the games no longer hold their places. '
       + 'Pin them again?',
     reapply: 'Pin again', later: 'Not now',
+    keepFree: 'Leave one place on the home screen unpinned, for the last game opened.',
+    fullTitle: 'Every place on the home screen is pinned',
+    fullBody: 'The last game opened has no place left there and ends up in the game library. '
+      + 'Free the first place for it?',
+    freeFirst: 'Free the first place',
   },
   saved: ['Order saved', 'Closing the app. The home screen comes back with the new order.'],
   closeNow: 'Close now',
@@ -158,6 +163,11 @@ const pt = {
     missingBody: 'O banco de dados da tela inicial foi reconstruído ou atualizado, e os jogos não seguram mais o '
       + 'lugar. Fixar de novo?',
     reapply: 'Fixar de novo', later: 'Agora não',
+    keepFree: 'Deixe um lugar da tela inicial sem fixar, para o último jogo aberto.',
+    fullTitle: 'Todos os lugares da tela inicial estão fixos',
+    fullBody: 'O último jogo aberto fica sem lugar ali e vai parar na biblioteca de jogos. '
+      + 'Liberar o primeiro lugar para ele?',
+    freeFirst: 'Liberar o primeiro lugar',
   },
   saved: ['Ordem salva', 'Fechando o app. A tela inicial já volta com a nova ordem.'],
   closeNow: 'Fechar agora',
