@@ -1742,8 +1742,7 @@ int main(void) {
 
   int server = listen_on_port();
   if (server < 0) return 0;
-  update_pin_triggers();
-  for (int quit = 0; !quit;) {
+  for (int quit = 0, triggers_checked = 0; !quit;) {
     int client = accept(server, NULL, NULL);
     if (client < 0) { if (errno == EINTR) continue; break; }
     struct timeval timeout = {5, 0};
@@ -1751,6 +1750,12 @@ int main(void) {
     setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof timeout);
     quit = handle(client);
     close(client);
+    // Once, after the first answer: the app waits only a few seconds for the service to answer at all, and a busy
+    // database could hold the backup that long.
+    if (!quit && !triggers_checked) {
+      triggers_checked = 1;
+      update_pin_triggers();
+    }
     // After the answer is out: the app closes once it has it.
     if (update.pending && run_update()) {
       // The port is closed before the new lineupd starts, and the app opens after it is out, so the app finds
