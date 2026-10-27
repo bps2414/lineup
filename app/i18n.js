@@ -59,6 +59,14 @@ const en = {
       + 'Free the first place for it?',
     freeFirst: 'Free the first place',
   },
+  report: {
+    save: 'Save a report for a bug',
+    title: 'Report saved',
+    body: path => `Copy ${path} over FTP and attach it to your issue on GitHub. It lists the apps on the Games and `
+      + 'Media tabs and how the home screen stores them, with no account details.',
+    ok: 'OK',
+    failed: detail => `Could not save the report (${detail}).`,
+  },
   saved: ['Order saved', 'Closing the app. The home screen comes back with the new order.'],
   closeNow: 'Close now',
   retry: 'Try again',
@@ -168,6 +176,14 @@ const pt = {
     fullBody: 'O último jogo aberto fica sem lugar ali e vai parar na biblioteca de jogos. '
       + 'Liberar o primeiro lugar para ele?',
     freeFirst: 'Liberar o primeiro lugar',
+  },
+  report: {
+    save: 'Salvar um relatório para um bug',
+    title: 'Relatório salvo',
+    body: path => `Copie ${path} por FTP e anexe na sua issue do GitHub. Ele lista os apps das abas Jogos e `
+      + 'Mídia e como a tela inicial guarda cada um, sem dados da conta.',
+    ok: 'OK',
+    failed: detail => `Não consegui salvar o relatório (${detail}).`,
   },
   saved: ['Ordem salva', 'Fechando o app. A tela inicial já volta com a nova ordem.'],
   closeNow: 'Fechar agora',

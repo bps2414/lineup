@@ -60,7 +60,7 @@
 #define LOG(fmt, ...) klog_printf("[lineupd] " fmt "\n", ##__VA_ARGS__)
 #endif
 
-#define LINEUPD_VERSION "1.4.2"
+#define LINEUPD_VERSION "1.4.3"
 #define TITLE_ID "PPSA99077"
 #ifdef LINEUPD_DIAG
 // Phase 0 diagnostic build (docs/pt-BR/PLANO-1.2.md): its own port, open to the LAN, so it runs beside the
@@ -351,14 +351,17 @@ static int check_and_backup(sqlite3* db, char* backup, size_t backup_size, char*
   "DELETE FROM lineup_tmp;"
 
 // Opening a game raises its index (twice, a few seconds apart); installing inserts and uninstalling deletes a row.
-// recursive_triggers is off by default, so REORDER's own UPDATE does not fire them again; a non-empty lineup_tmp
-// stops them too, should it be on.
-#define PIN_TRIGGER(kind, event, when) \
-  "CREATE TRIGGER lineup_pin_" kind "_%1$s AFTER " event " ON tbl_iconinfo_%1$s WHEN " when \
-  "NOT EXISTS (SELECT 1 FROM lineup_tmp) BEGIN " REORDER " END;"
+// Only the home row's games fire them: an app on the Media tab (dispLocation 188) opens, installs and goes as if
+// Lineup were not there. recursive_triggers is off by default, so REORDER's own UPDATE does not fire them again; a
+// non-empty lineup_tmp stops them too, should it be on.
+#define PIN_TRIGGER(kind, event, when, row) \
+  "CREATE TRIGGER lineup_pin_" kind "_%1$s AFTER " event " ON tbl_iconinfo_%1$s WHEN " when row "visible = 1 AND " \
+  row PIN_ROW_ONLY " (SELECT 1 FROM lineup_tmp) BEGIN " REORDER " END;"
+// Triggers without this text are 1.4.2's or older, which ran for the Media tab too; update_pin_triggers replaces them.
+#define PIN_ROW_ONLY "dispLocation = 138 AND NOT EXISTS"
 #define PIN_TRIGGERS \
-  PIN_TRIGGER("u", "UPDATE OF lastAccessIndex", "NEW.lastAccessIndex > OLD.lastAccessIndex AND ") \
-  PIN_TRIGGER("i", "INSERT", "") PIN_TRIGGER("d", "DELETE", "")
+  PIN_TRIGGER("u", "UPDATE OF lastAccessIndex", "NEW.lastAccessIndex > OLD.lastAccessIndex AND ", "NEW.") \
+  PIN_TRIGGER("i", "INSERT", "", "NEW.") PIN_TRIGGER("d", "DELETE", "", "OLD.")
 
 static int drop_pin_triggers(sqlite3* db, const char* user) {
   char sql[256];
@@ -492,6 +495,42 @@ static int unpin(const char* user, char* backup, size_t backup_size, char* messa
 done:
   sqlite3_close(db);
   return status;
+}
+
+// Replaces the triggers of 1.4.2 and older, which ran for the Media tab's apps too, after a backup. Returns how many
+// profiles it updated, or -1.
+static int update_pin_triggers(void) {
+  sqlite3* db = open_db(1);
+  if (!db) return -1;
+  static char users[MAX_GAMES][16];
+  int count = 0, failed = 0;
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT DISTINCT substr(name, 14) FROM sqlite_master WHERE type = 'trigger' AND name GLOB "
+                         "'lineup_pin_[uid]_*' AND sql NOT LIKE '%" PIN_ROW_ONLY "%'", -1, &statement, NULL) != SQLITE_OK)
+    failed = 1;
+  else {
+    while (count < MAX_GAMES && sqlite3_step(statement) == SQLITE_ROW) {
+      const char* user = (const char*)sqlite3_column_text(statement, 0);
+      if (user && is_user_id(user)) snprintf(users[count++], sizeof users[0], "%s", user);
+    }
+    sqlite3_finalize(statement);
+  }
+  if (!failed && count) {
+    char backup[256] = "", message[300] = "";
+    static char sql[16 * 1024];
+    failed = check_and_backup(db, backup, sizeof backup, message, sizeof message) ||
+             sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK;
+    for (int i = 0; !failed && i < count; ++i)
+      failed = drop_pin_triggers(db, users[i]) || snprintf(sql, sizeof sql, PIN_TRIGGERS, users[i]) >= (int)sizeof sql ||
+               sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK;
+    if (failed || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+      LOG("pin triggers not updated: %s", *message ? message : sqlite3_errmsg(db));
+      sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+      failed = 1;
+    } else LOG("pin triggers updated for %d profiles, backup %s", count, backup);
+  }
+  sqlite3_close(db);
+  return failed ? -1 : count;
 }
 
 // Saves `posted` as the new order. Returns the HTTP status; `message` explains a failure.
@@ -729,6 +768,85 @@ static int swap_tree(const char* from, const char* to) {
   return failed ? -1 : 0;
 }
 
+// ---- Report ----
+//
+// What app.db holds about the Games (dispLocation 138) and Media (188) tabs, for a bug report: the columns that
+// tell the two apart, and no account data.
+
+static const char* report_dir = "/data/lineup";
+
+static void diag_error(Buffer* b, const char* message) {
+  puts_(b, "{\"error\":");
+  put_json_string(b, message);
+  puts_(b, "}");
+}
+
+// Each result row as an object keyed by column name.
+static void diag_query(Buffer* b, sqlite3* db, const char* sql) {
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) { diag_error(b, sqlite3_errmsg(db)); return; }
+  puts_(b, "[");
+  for (int row = 0; sqlite3_step(statement) == SQLITE_ROW; ++row) {
+    puts_(b, row ? ",{" : "{");
+    for (int column = 0; column < sqlite3_column_count(statement); ++column) {
+      if (column) puts_(b, ",");
+      put_json_string(b, sqlite3_column_name(statement, column));
+      puts_(b, ":");
+      int type = sqlite3_column_type(statement, column);
+      if (type == SQLITE_INTEGER) putf(b, "%lld", (long long)sqlite3_column_int64(statement, column));
+      else if (type == SQLITE_NULL) puts_(b, "null");
+      else put_json_string(b, (const char*)sqlite3_column_text(statement, column));
+    }
+    puts_(b, "}");
+  }
+  sqlite3_finalize(statement);
+  puts_(b, "]");
+}
+
+// Writes report_dir/report.json, its path in `path`. Returns the HTTP status; `message` explains a failure.
+static int write_report(char* path, size_t path_size, char* message, size_t message_size) {
+  sqlite3* db = open_db(0);
+  if (!db) { snprintf(message, message_size, "Could not open the home screen database."); return 500; }
+  Buffer b = {0};
+  puts_(&b, "{\"version\":\"" LINEUPD_VERSION "\",\"triggers\":");
+  diag_query(&b, db, "SELECT name, tbl_name, CASE WHEN name GLOB 'lineup_pin_*' THEN sql LIKE '%" PIN_ROW_ONLY "%' END "
+                     "AS current FROM sqlite_master WHERE type = 'trigger' ORDER BY name");
+  puts_(&b, ",\"profiles\":[");
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT substr(name, 14) FROM sqlite_master WHERE type = 'table' AND name GLOB "
+                         "'tbl_iconinfo_[0-9]*' ORDER BY name", -1, &statement, NULL) == SQLITE_OK) {
+    for (int first = 1; sqlite3_step(statement) == SQLITE_ROW;) {
+      const char* user = (const char*)sqlite3_column_text(statement, 0);
+      if (!user || !is_user_id(user)) continue;
+      puts_(&b, first ? "{\"user\":" : ",{\"user\":");
+      first = 0;
+      put_json_string(&b, user);
+      puts_(&b, ",\"apps\":");
+      char sql[400];
+      snprintf(sql, sizeof sql, "SELECT titleId, titleName, dispLocation, visible, lastAccessIndex, pinnedStatus, "
+               "appDrmType, lastLaunchMethod, deeplinkUri, hubAppUri FROM tbl_iconinfo_%s WHERE dispLocation IN "
+               "(138, 188) ORDER BY dispLocation, lastAccessIndex DESC", user);
+      diag_query(&b, db, sql);
+      puts_(&b, "}");
+    }
+    sqlite3_finalize(statement);
+  }
+  puts_(&b, "],\"content\":");
+  diag_query(&b, db, "SELECT titleId, titleName, dispLocation, viewCategory, categoryType, appType, is3rdPartyVideoApp, "
+                     "appinfoContentType, contentStatus, installStatus, pprDeeplinkUri, pprHubAppUri FROM tbl_contentinfo "
+                     "ORDER BY dispLocation, titleId");
+  puts_(&b, "}\n");
+  sqlite3_close(db);
+  make_dirs(report_dir);
+  snprintf(path, path_size, "%s/report.json", report_dir);
+  FILE* file = b.data ? fopen(path, "wb") : NULL;
+  int failed = !file || fwrite(b.data, 1, b.size, file) != b.size;
+  if (file && fclose(file)) failed = 1;
+  free(b.data);
+  if (failed) { snprintf(message, message_size, "Could not write %s (%s).", path, strerror(errno)); return 500; }
+  return 200;
+}
+
 #ifndef LINEUPD_TEST
 
 // ---- HTTP ----
@@ -910,6 +1028,18 @@ static void post_unpin(int socket, const char* user) {
   Buffer reply = {0};
   puts_(&reply, "{\"ok\":true,\"backup\":");
   put_json_string(&reply, backup);
+  puts_(&reply, "}");
+  respond_json(socket, 200, &reply);
+  free(reply.data);
+}
+
+static void post_report(int socket) {
+  char path[256] = "", message[300] = "";
+  int status = write_report(path, sizeof path, message, sizeof message);
+  if (status != 200) { respond_error(socket, status, message); return; }
+  Buffer reply = {0};
+  puts_(&reply, "{\"ok\":true,\"path\":");
+  put_json_string(&reply, path);
   puts_(&reply, "}");
   respond_json(socket, 200, &reply);
   free(reply.data);
@@ -1233,12 +1363,6 @@ static void finish_update(void) {
 
 // ---- Phase 0 diagnostics ----
 
-static void diag_error(Buffer* b, const char* message) {
-  puts_(b, "{\"error\":");
-  put_json_string(b, message);
-  puts_(b, "}");
-}
-
 // A directory as [{"name","size","mtime","dir"}], `depth` levels deep, at most 200 entries a level.
 static void diag_list(Buffer* b, const char* path, int depth) {
   DIR* dir = opendir(path);
@@ -1261,28 +1385,6 @@ static void diag_list(Buffer* b, const char* path, int depth) {
     puts_(b, "}");
   }
   closedir(dir);
-  puts_(b, "]");
-}
-
-// Each result row as an object keyed by column name.
-static void diag_query(Buffer* b, sqlite3* db, const char* sql) {
-  sqlite3_stmt* statement;
-  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) { diag_error(b, sqlite3_errmsg(db)); return; }
-  puts_(b, "[");
-  for (int row = 0; sqlite3_step(statement) == SQLITE_ROW; ++row) {
-    puts_(b, row ? ",{" : "{");
-    for (int column = 0; column < sqlite3_column_count(statement); ++column) {
-      if (column) puts_(b, ",");
-      put_json_string(b, sqlite3_column_name(statement, column));
-      puts_(b, ":");
-      int type = sqlite3_column_type(statement, column);
-      if (type == SQLITE_INTEGER) putf(b, "%lld", (long long)sqlite3_column_int64(statement, column));
-      else if (type == SQLITE_NULL) puts_(b, "null");
-      else put_json_string(b, (const char*)sqlite3_column_text(statement, column));
-    }
-    puts_(b, "}");
-  }
-  sqlite3_finalize(statement);
   puts_(b, "]");
 }
 
@@ -1574,6 +1676,9 @@ static int handle(int socket) {
     else if (strcmp(target, "/pins/off")) respond_error(socket, 404, "Unknown route.");
     else if (!query_value(query, "user", user, sizeof user) || !is_user_id(user)) respond_error(socket, 400, "user must be 10 digits.");
     else post_unpin(socket, user);
+  } else if (post && !strcmp(target, "/report")) {
+    if (!authorized) respond_error(socket, 403, "Missing the X-Lineup header.");
+    else post_report(socket);
   } else if (get && !strncmp(target, "/icon/", 6)) {
     get_icon(socket, target + 6);
   } else if (get && !strncmp(target, "/avatar/", 8)) {
@@ -1637,6 +1742,7 @@ int main(void) {
 
   int server = listen_on_port();
   if (server < 0) return 0;
+  update_pin_triggers();
   for (int quit = 0; !quit;) {
     int client = accept(server, NULL, NULL);
     if (client < 0) { if (errno == EINTR) continue; break; }
@@ -1756,6 +1862,40 @@ static void test_pins(void) {
   save_digits(one, "31254", "35");
   expect_row(one, "31254");
   assert(!strcmp(pins_of(one, slots), "on") && slots[0] == 0 && slots[1] < 0 && slots[3] == 3);
+  // 1.4.2's update trigger, which ran for the Media tab too, is replaced once; the current ones stay.
+  {
+    static char old[16 * 1024];
+    snprintf(old, sizeof old, "DROP TRIGGER lineup_pin_u_%1$s; CREATE TRIGGER lineup_pin_u_%1$s AFTER UPDATE OF "
+             "lastAccessIndex ON tbl_iconinfo_%1$s WHEN NEW.lastAccessIndex > OLD.lastAccessIndex AND NOT EXISTS "
+             "(SELECT 1 FROM lineup_tmp) BEGIN " REORDER " END;", one);
+    sqlite3* db = open_db(1);
+    assert(db && sqlite3_exec(db, old, NULL, NULL, NULL) == SQLITE_OK);
+    sqlite3_close(db);
+  }
+  assert(update_pin_triggers() == 1 && update_pin_triggers() == 0);
+  assert(!scalar("SELECT COUNT(*) FROM sqlite_master WHERE name GLOB 'lineup_pin_[uid]_*' AND sql NOT LIKE '%" PIN_ROW_ONLY "%'"));
+  // Opening the Media tab's app leaves the games alone, even out of their pinned places (lowering an index fires
+  // nothing); 1.4.2 would have put game 3 back first.
+  long long three = scalar("SELECT lastAccessIndex FROM tbl_iconinfo_0000000001 WHERE titleId = 'PPSA00003'");
+  run("UPDATE tbl_iconinfo_%1$s SET lastAccessIndex = 0 WHERE titleId = '%2$s'", one, "PPSA00003");
+  open_game(one, "PPSA00006");
+  expect_row(one, "12543");
+  char raise[256];
+  snprintf(raise, sizeof raise, "UPDATE tbl_iconinfo_%%1$s SET lastAccessIndex = %lld WHERE titleId = '%%2$s'", three);
+  run(raise, one, "PPSA00003");
+  expect_row(one, "31254");
+  // The report lists the triggers, current, and every profile.
+  {
+    char path[256], message[300], text[4096] = "";
+    report_dir = "/tmp/lineupd-test-report";
+    assert(write_report(path, sizeof path, message, sizeof message) == 200);
+    FILE* file = fopen(path, "rb");
+    assert(file);
+    text[fread(text, 1, sizeof text - 1, file)] = 0;
+    fclose(file);
+    assert(strstr(text, "{\"name\":\"lineup_pin_u_0000000001\",\"tbl_name\":\"tbl_iconinfo_0000000001\",\"current\":1}") &&
+           strstr(text, "{\"user\":\"0000000001\",\"apps\":"));
+  }
   // Opening games: the others take the free places by how recently they were used.
   open_game(one, "PPSA00004");
   expect_row(one, "34152");

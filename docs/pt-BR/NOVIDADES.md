@@ -2,6 +2,14 @@
 
 As notas que o app mostra ao atualizar. Cada versão aqui acompanha a mesma seção do `CHANGELOG.md`.
 
+## 1.4.3
+
+- Os jogos fixos só reagem à aba Jogos. Abrir, instalar ou remover um app da aba Mídia não roda mais a
+  reordenação do Lineup. Os fixos salvos por uma versão anterior passam a funcionar assim sozinhos na primeira vez
+  que o Lineup abre.
+- Opções → "Salvar um relatório para um bug" grava `/data/lineup/report.json`: os apps das abas Jogos e Mídia e
+  como a tela inicial guarda cada um, sem dados da conta. Copie por FTP e anexe na sua issue.
+
 ## 1.4.2
 
 - Um lugar da tela inicial sempre fica sem fixar. Com todos fixos, o último jogo aberto (a entrada do
