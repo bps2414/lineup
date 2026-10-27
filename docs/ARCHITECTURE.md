@@ -69,7 +69,7 @@ carry `X-Lineup: 1`, so a web page cannot trigger one with a plain form.
 | --- | --- |
 | `GET /version` | `{"version"}` |
 | `GET /profiles` | `{"profiles":[{"userId","hex","name","avatar"}]}`; `avatar` is the picture's mtime, or 0 |
-| `GET /row?user=<10 digits>` | `{"user","pins","games":[{"titleId","name","index","icon","pinned"}]}`, in home order; `pinned` is the slot or `null`, `pins` is `"on"`, `"missing"` (pins without their triggers) or `"off"` |
+| `GET /row?user=<10 digits>[&tab=games\|media]` | `{"user","tab","pins","games":[{"titleId","name","index","icon","pinned"}]}`, in home order; the Media tab (`dispLocation = 188`) has no pins; `pinned` is the slot or `null`, `pins` is `"on"`, `"missing"` (pins without their triggers) or `"off"` |
 | `GET /icon/<titleId>` | `image/png`, the icon the home screen draws |
 | `GET /avatar/<10 digits>` | `image/png`, `avatar.png` from `/system_data/priv/cache/profile/0x<id>/` (8 or 16 hex digits) |
 | `POST /row?user=<10 digits>` | body `LIN1\n` then `<titleId> <index>[ pin]\n` per game, in the new order, with the index as read; ` pin` pins the game at that place. `{"ok","backup","integrity"}` |

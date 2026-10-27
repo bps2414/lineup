@@ -69,7 +69,7 @@ formulário simples.
 | --- | --- |
 | `GET /version` | `{"version"}` |
 | `GET /profiles` | `{"profiles":[{"userId","hex","name","avatar"}]}`; `avatar` é o mtime da foto, ou 0 |
-| `GET /row?user=<10 dígitos>` | `{"user","pins","games":[{"titleId","name","index","icon","pinned"}]}`, na ordem da tela inicial; `pinned` é a posição fixa ou `null`, `pins` é `"on"`, `"missing"` (fixos sem os triggers) ou `"off"` |
+| `GET /row?user=<10 dígitos>[&tab=games\|media]` | `{"user","tab","pins","games":[{"titleId","name","index","icon","pinned"}]}`, na ordem da tela inicial; a aba Mídia (`dispLocation = 188`) não tem fixos; `pinned` é a posição fixa ou `null`, `pins` é `"on"`, `"missing"` (fixos sem os triggers) ou `"off"` |
 | `GET /icon/<titleId>` | `image/png`, o ícone que a tela inicial desenha |
 | `GET /avatar/<10 dígitos>` | `image/png`, o `avatar.png` de `/system_data/priv/cache/profile/0x<id>/` (8 ou 16 dígitos hex) |
 | `POST /row?user=<10 dígitos>` | corpo `LIN1\n` e depois `<titleId> <índice>[ pin]\n` por jogo, na nova ordem, com o índice lido; ` pin` fixa o jogo naquela posição. `{"ok","backup","integrity"}` |

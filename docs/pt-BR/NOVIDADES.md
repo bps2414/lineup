@@ -2,6 +2,12 @@
 
 As notas que o app mostra ao atualizar. Cada versão aqui acompanha a mesma seção do `CHANGELOG.md`.
 
+## 1.5.0
+
+- L1 e R1 trocam para a aba Mídia e de volta. Por enquanto a aba Mídia é só para ver: mostra os apps na ordem
+  da tela inicial, ainda sem mover nem fixar. Mudanças não salvas na aba Jogos precisam ser salvas ou
+  descartadas antes.
+
 ## 1.4.3
 
 - Os jogos fixos só reagem à aba Jogos. Abrir, instalar ou remover um app da aba Mídia não roda mais a

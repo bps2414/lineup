@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Lineup reorders the PS5 home-screen game row. The lineupd service (payloads/lineupd.c) reads and
 // saves the row; this app draws it, lifts the focused game with X and carries it with the D-pad. Square pins
-// the focused game where it stands when the order is saved.
+// the focused game where it stands when the order is saved. L1 and R1 switch to the Media tab, shown read only.
 //
 // Focus lives on invisible slots, one per position, laid out in a plain row so the focus manager moves
 // between them. The games are drawn apart, keyed by title, and only their transforms move: the focused
@@ -31,6 +31,8 @@ const AFTER = 8;
 // The home screen shows only the first games of the row; the rest are in the game library alone.
 // ponytail: 12 seen on one console (firmware 13.60); read it from the system if it turns out to vary.
 const HOME_LIMIT = 12;
+// ponytail: the Media tab's limit is not known yet, so it shows no home screen edge.
+const homeLimit = tab => (tab === 'games' ? HOME_LIMIT : Infinity);
 
 const SPRING = {type: 'spring', stiffness: 420, damping: 40};
 const TILE = {...SPRING, opacity: {type: 'tween', duration: 0.14}};
@@ -126,6 +128,7 @@ const Tile = memo(function Tile({game, index, place, lifted, moved, pinned}) {
 });
 
 function Row({s}) {
+  const limit = homeLimit(s.tab);
   const from = Math.max(0, s.focus - BEFORE);
   const ids = s.order.slice(from, s.focus + AFTER + 1);
   return (
@@ -139,10 +142,10 @@ function Row({s}) {
             moved={s.home[id] !== index} pinned={!!s.pins[id]} />
         );
       })}
-      {s.order.length > HOME_LIMIT ? (
+      {s.order.length > limit ? (
         // The home screen's edge, centred in the gap before the first game it leaves out.
         <motion.View className="absolute left-0 top-0 w-[2px] h-[128px] bg-muted" initial={false}
-          animate={{x: LEFT + HOME_LIMIT * STRIDE + (HOME_LIMIT > s.focus ? BIG - SMALL : 0) - (STRIDE - SMALL) / 2 - 1}}
+          animate={{x: LEFT + limit * STRIDE + (limit > s.focus ? BIG - SMALL : 0) - (STRIDE - SMALL) / 2 - 1}}
           transition={SPRING} />
       ) : null}
     </motion.View>
@@ -153,7 +156,7 @@ const RAIL = 1152;
 
 // The whole row at a glance: a hairline ruler with a tick per game (when they fit), the moved games'
 // ticks in white, the pinned ones as small white blocks, and a marker on the focused one.
-const Ticks = memo(function Ticks({order, home, pins}) {
+const Ticks = memo(function Ticks({order, home, pins, limit}) {
   const at = i => Math.round(i * RAIL / Math.max(order.length - 1, 1));
   if (order.length > 96) return null;
   const ticks = order.map((id, i) => (pins[id]
@@ -162,9 +165,9 @@ const Ticks = memo(function Ticks({order, home, pins}) {
       : 'absolute top-[3px] w-[2px] h-[10px] bg-fg'} style={{left: px(at(i) - 1)}} />
   ));
   // Where the home screen stops: a tall mark halfway between the last game it shows and the next.
-  if (order.length > HOME_LIMIT) {
+  if (order.length > limit) {
     ticks.push(<View key="home-limit" className="absolute -top-[6px] w-[2px] h-[28px] bg-muted"
-      style={{left: px(Math.round((at(HOME_LIMIT - 1) + at(HOME_LIMIT)) / 2) - 1)}} />);
+      style={{left: px(Math.round((at(limit - 1) + at(limit)) / 2) - 1)}} />);
   }
   return ticks;
 });
@@ -174,7 +177,7 @@ function Rail({s}) {
   return (
     <View className="absolute left-16 top-[440px] w-[1152px] h-[16px]">
       <View className="absolute left-0 right-0 top-[7px] h-[2px] bg-line" />
-      <Ticks order={s.order} home={s.home} pins={s.pins} />
+      <Ticks order={s.order} home={s.home} pins={s.pins} limit={homeLimit(s.tab)} />
       <motion.View className="absolute left-0 top-0 w-[6px] h-[16px] rounded-full bg-fg" initial={false}
         animate={{x: x - 3}} transition={SPRING} />
     </View>
@@ -208,7 +211,7 @@ function Position({s}) {
   const notes = [];
   if (s.pins[id]) notes.push(T.pins.pinnedAt(s.focus + 1));
   if (was !== s.focus) notes.push(T.before(was + 1));
-  if (s.focus >= HOME_LIMIT) notes.push(T.offHome);
+  if (s.focus >= homeLimit(s.tab)) notes.push(T.offHome);
   const note = notes.join(', ');
   return (
     <>
@@ -229,23 +232,45 @@ function Position({s}) {
   );
 }
 
-function Header({profile}) {
+const Shoulder = ({label}) => (
+  <View className="rounded-md border-[1.5px] border-dim px-1.5">
+    <Text className="font-inter text-hint text-fg">{label}</Text>
+  </View>
+);
+
+/** The two tabs of the home screen, as L1 and R1 switch them; the one shown in white. */
+function Tabs({tab}) {
   return (
-    <View className="absolute left-16 top-10 flex-row items-center gap-4">
-      <Mark />
-      <Text className="font-inter text-head text-fg">Lineup</Text>
-      {profile ? <Avatar profile={profile} size={36} /> : null}
-      {profile ? <Text className="font-inter text-head text-muted">{profile.name}</Text> : null}
+    <View className="absolute right-16 top-10 flex-row items-center gap-4">
+      <Shoulder label="L1" />
+      <Text className={`font-inter text-head ${tab === 'games' ? 'text-fg' : 'text-dim'}`}>{T.tabs.games}</Text>
+      <Text className={`font-inter text-head ${tab === 'media' ? 'text-fg' : 'text-dim'}`}>{T.tabs.media}</Text>
+      <Shoulder label="R1" />
     </View>
+  );
+}
+
+function Header({profile, tab}) {
+  return (
+    <>
+      <View className="absolute left-16 top-10 flex-row items-center gap-4">
+        <Mark />
+        <Text className="font-inter text-head text-fg">Lineup</Text>
+        {profile ? <Avatar profile={profile} size={36} /> : null}
+        {profile ? <Text className="font-inter text-head text-muted">{profile.name}</Text> : null}
+      </View>
+      {tab ? <Tabs tab={tab} /> : null}
+    </>
   );
 }
 
 const H = T.hints;
 const ROW_HINTS = [['cross', H.lift], ['triangle', H.save], ['options', H.options], ['circle', H.quit]];
+const MEDIA_HINTS = [['options', H.options], ['circle', H.quit]];
 const LIFT_HINTS = [['dpad', H.move], ['cross', H.drop], ['circle', H.cancel]];
 const PICK_HINTS = [['cross', H.choose], ['circle', H.back]];
 
-const START = {phase: 'loading', step: T.service.looking, error: null, profiles: [], user: null,
+const START = {phase: 'loading', step: T.service.looking, error: null, profiles: [], user: null, tab: 'games',
   games: {}, home: {}, base: [], order: [], pins: {}, pinned: {}, focus: 0, dir: 1, lifted: false, liftFrom: 0, layer: null,
   target: null, toast: null, pending: null, progress: null, settings: null, update: null, install: null};
 
@@ -291,9 +316,9 @@ function App() {
     BackHandler.exitApp();
   };
 
-  const loadRow = async (user, profiles) => {
-    const {games: list, pins} = await api.row(user);
-    if (!list.length) throw new api.Problem(...T.emptyRow);
+  const loadRow = async (user, profiles, tab = ref.current.tab) => {
+    const {games: list, pins} = await api.row(user, tab);
+    if (!list.length) throw new api.Problem(...(tab === 'media' ? T.tabs.emptyMedia : T.emptyRow));
     const games = {};
     const home = {};
     const pinned = {};
@@ -306,7 +331,7 @@ function App() {
     // A row pinned in full by 1.4.1 or older.
     const layer = pins === 'missing' ? 'pinsMissing' : pins === 'on' && homeFull(base, allPinned(pinned)) ? 'pinsFull' : null;
     light(false);
-    patch({phase: 'row', profiles, user, games, home, base, order: base, pins: allPinned(pinned), pinned, focus: 0,
+    patch({phase: 'row', profiles, user, tab, games, home, base, order: base, pins: allPinned(pinned), pinned, focus: 0,
       dir: 1, lifted: false, layer, target: null, pending: layer ? null : {index: 0}});
   };
 
@@ -331,7 +356,7 @@ function App() {
       }
       const foreground = Users.getForeground();
       const id = foreground ? String(foreground.id >>> 0).padStart(10, '0') : '';
-      await loadRow((profiles.find(profile => profile.userId === id) ?? profiles[0]).userId, profiles);
+      await loadRow((profiles.find(profile => profile.userId === id) ?? profiles[0]).userId, profiles, 'games');
     } catch (error) {
       patch({phase: 'error', error: error instanceof api.Problem ? error
         : {title: T.openFailed, detail: String(error?.message ?? error)}});
@@ -462,6 +487,10 @@ function App() {
     return {order, focus: index, dir: index < p.focus ? -1 : 1};
   }), []);
   const onPressIndex = useCallback(index => {
+    if (ref.current.tab === 'media') {
+      toast(T.tabs.readOnly);
+      return;
+    }
     const lifting = !ref.current.lifted;
     if (lifting) Controller.vibrate(0.35, 45);
     light(lifting);
@@ -483,10 +512,34 @@ function App() {
     else exit();
     return true;
   };
+  // Unsaved changes stay on the Games tab: switching asks to save or discard them first.
+  const switchTab = async tab => {
+    const p = ref.current;
+    if (tab === p.tab || p.lifted) return;
+    if (changed(p)) {
+      toast(T.tabs.saveFirst);
+      return;
+    }
+    patch({layer: 'busy'});
+    try {
+      await loadRow(p.user, p.profiles, tab);
+    } catch (error) {
+      close();
+      toast(error.detail ?? error.message);
+    }
+  };
   const onAction = action => {
     if (action === 'options') {
       light(false);
       patch({lifted: false, layer: 'menu'});
+      return true;
+    }
+    if (action === 'l1' || action === 'r1') {
+      switchTab(action === 'l1' ? 'games' : 'media');
+      return true;
+    }
+    if (ref.current.tab === 'media' && (action === 'triangle' || action === 'square')) {
+      toast(T.tabs.readOnly);
       return true;
     }
     if (action === 'triangle') {
@@ -596,7 +649,8 @@ function App() {
 
   const count = changed(s);
   const pinHint = ['square', s.pins[s.order[s.focus]] ? H.unpin : H.pin];
-  const hints = s.layer ? PICK_HINTS : s.lifted ? LIFT_HINTS : [ROW_HINTS[0], pinHint, ...ROW_HINTS.slice(1)];
+  const hints = s.layer ? PICK_HINTS : s.lifted ? LIFT_HINTS : s.tab === 'media' ? MEDIA_HINTS
+    : [ROW_HINTS[0], pinHint, ...ROW_HINTS.slice(1)];
   const settings = s.settings ?? {checkOnOpen: true, skipped: ''};
   const file = s.update?.[s.install?.kind === 'image' ? 'exfat' : 'zip'];
   const notes = [s.update?.notes?.[LANGUAGE] ?? s.update?.notes?.en, file?.size ? T.update.size(file.size) : '']
@@ -604,7 +658,7 @@ function App() {
   return (
     <View className="w-screen h-screen bg-canvas">
       <Wash />
-      <Header profile={profile} />
+      <Header profile={profile} tab={s.tab} />
       <FocusScope row autoFocus onBack={onBack} onAction={onAction}>
         <Slots count={s.order.length} onFocusIndex={onFocusIndex} onPressIndex={onPressIndex} />
       </FocusScope>
@@ -627,13 +681,16 @@ function App() {
                 onPress={() => patch({layer: 'rollback'})} />
             ) : null,
           ] : s.layer === 'menu' ? [
-            <SheetItem key="save" label={T.menu.save} onPress={() => save()}
-              detail={T.menu.changes(count)} />,
-            <SheetItem key="discard" label={T.menu.discard} onPress={discard} />,
-            <SheetItem key="sort" label={T.menu.sort} onPress={sortAZ} />,
-            <SheetItem key="pin-all" label={T.pins.pinAll} onPress={() => pinAll(true)} />,
-            <SheetItem key="unpin-all" label={T.pins.unpinAll} onPress={() => pinAll(false)} />,
-            <SheetRule key="rule" />,
+            // The Media tab is read only: no order to change there.
+            ...(s.tab === 'games' ? [
+              <SheetItem key="save" label={T.menu.save} onPress={() => save()}
+                detail={T.menu.changes(count)} />,
+              <SheetItem key="discard" label={T.menu.discard} onPress={discard} />,
+              <SheetItem key="sort" label={T.menu.sort} onPress={sortAZ} />,
+              <SheetItem key="pin-all" label={T.pins.pinAll} onPress={() => pinAll(true)} />,
+              <SheetItem key="unpin-all" label={T.pins.unpinAll} onPress={() => pinAll(false)} />,
+              <SheetRule key="rule" />,
+            ] : []),
             <SheetItem key="profiles" label={T.menu.profiles} onPress={() => patch({layer: 'profiles'})}
               detail={s.profiles.length > 1 ? T.menu.profileCount(s.profiles.length) : ''} />,
             s.update ? (

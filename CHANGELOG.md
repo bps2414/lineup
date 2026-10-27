@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.0
+
+- L1 and R1 switch to the Media tab and back. The Media tab is read only for now: it shows its apps in home
+  order, with no moving or pinning yet. Unsaved changes on the Games tab must be saved or discarded first.
+
 ## 1.4.3
 
 - Pinned games only react to the Games tab. Opening, installing or removing an app on the Media tab no longer

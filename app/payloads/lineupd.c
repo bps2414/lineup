@@ -9,14 +9,16 @@
 // Endpoints (JSON unless noted), on 127.0.0.1:9077 (0.0.0.0 when built with -DLINEUPD_LAN):
 //   GET  /version                {"version"}
 //   GET  /profiles                 {"profiles":[{"userId","hex","name","avatar"}]}
-//   GET  /row?user=<10 dig>  {"user","pins":"on"|"missing"|"off","games":[{"titleId","name","index","icon",
-//                                "pinned":slot|null}]}
+//   GET  /row?user=<10 dig>[&tab=games|media]  {"user","tab","pins":"on"|"missing"|"off","games":[{"titleId",
+//                                "name","index","icon","pinned":slot|null}]}; the Media tab (dispLocation 188) is
+//                                read only, with no pins
 //   GET  /icon/<titleId>         image/png
 //   GET  /avatar/<10 dig>        image/png, the profile's picture
 //   POST /row?user=<10 dig>  X-Lineup: 1; body "LIN1\n" then "<titleId> <index>[ pin]\n" per game,
 //                                in the new order, with the index the client read; " pin" pins it at that place
 //   POST /pins/off?user=<10 dig> X-Lineup: 1; unpins that profile's games
 //   POST /pins/uninstall         X-Lineup: 1; removes every pin, trigger and table Lineup added to app.db
+//   POST /report                 X-Lineup: 1; writes /data/lineup/report.json, the Games and Media tabs' apps
 //   POST /quit                   X-Lineup: 1; exits after answering
 //   GET  /update/install         X-Lineup: 1; {"kind":"folder"|"image","path","previous"}
 //   POST /update/apply?version=<x.y.z|previous>  X-Lineup: 1; backs up the installed folder first and answers
@@ -60,7 +62,7 @@
 #define LOG(fmt, ...) klog_printf("[lineupd] " fmt "\n", ##__VA_ARGS__)
 #endif
 
-#define LINEUPD_VERSION "1.4.3"
+#define LINEUPD_VERSION "1.5.0"
 #define TITLE_ID "PPSA99077"
 #ifdef LINEUPD_DIAG
 // Phase 0 diagnostic build (docs/pt-BR/PLANO-1.2.md): its own port, open to the LAN, so it runs beside the
@@ -218,11 +220,15 @@ static int table_exists(sqlite3* db, const char* user) {
   return has_object(db, name);
 }
 
-// `user` must already be validated: table names cannot be bound.
-static int read_row(sqlite3* db, const char* user, Row* rows, char (*names)[256], int capacity) {
+#define GAMES_TAB 138
+#define MEDIA_TAB 188
+
+// The apps on tab `location` (GAMES_TAB or MEDIA_TAB), in home order. `user` must already be validated: table
+// names cannot be bound.
+static int read_tab(sqlite3* db, const char* user, int location, Row* rows, char (*names)[256], int capacity) {
   char sql[160];
   snprintf(sql, sizeof sql, "SELECT titleId, titleName, lastAccessIndex FROM tbl_iconinfo_%s "
-           "WHERE visible = 1 AND dispLocation = 138 ORDER BY lastAccessIndex DESC", user);
+           "WHERE visible = 1 AND dispLocation = %d ORDER BY lastAccessIndex DESC", user, location);
   sqlite3_stmt* statement;
   if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) return -1;
   int count = 0;
@@ -236,6 +242,10 @@ static int read_row(sqlite3* db, const char* user, Row* rows, char (*names)[256]
   }
   sqlite3_finalize(statement);
   return count;
+}
+
+static int read_row(sqlite3* db, const char* user, Row* rows, char (*names)[256], int capacity) {
+  return read_tab(db, user, GAMES_TAB, rows, names, capacity);
 }
 
 // The icon the home screen draws: tbl_contentinfo.icon0Info (/user/app/<id>/sce_sys/icon0.png?ts=...),
@@ -931,13 +941,14 @@ static void get_profiles(int socket) {
   free(body.data);
 }
 
-static void get_row(int socket, const char* user) {
+// `media`: the Media tab, which has no pins.
+static void get_row(int socket, const char* user, int media) {
   static Row rows[MAX_GAMES];
   static char names[MAX_GAMES][256];
   sqlite3* db = open_db(0);
   if (!db) { respond_error(socket, 500, "Could not open the home screen database."); return; }
   if (!table_exists(db, user)) { sqlite3_close(db); respond_error(socket, 404, "No such profile."); return; }
-  int count = read_row(db, user, rows, names, MAX_GAMES);
+  int count = read_tab(db, user, media ? MEDIA_TAB : GAMES_TAB, rows, names, MAX_GAMES);
   static long long icons[MAX_GAMES];
   static int slots[MAX_GAMES];
   for (int i = 0; i < count; ++i) {
@@ -946,13 +957,15 @@ static void get_row(int socket, const char* user) {
     icon_path(db, rows[i].title, path, sizeof path);
     icons[i] = stat(path, &info) ? 0 : (long long)info.st_mtime;
   }
-  const char* pins = read_pins(db, user, rows, count < 0 ? 0 : count, slots);
+  const char* pins = "off";
+  if (media) for (int i = 0; i < count; ++i) slots[i] = -1;
+  else pins = read_pins(db, user, rows, count < 0 ? 0 : count, slots);
   sqlite3_close(db);
   if (count < 0) { respond_error(socket, 500, "Could not read the row."); return; }
   Buffer body = {0};
   puts_(&body, "{\"user\":");
   put_json_string(&body, user);
-  putf(&body, ",\"pins\":\"%s\",\"games\":[", pins);
+  putf(&body, ",\"tab\":\"%s\",\"pins\":\"%s\",\"games\":[", media ? "media" : "games", pins);
   for (int i = 0; i < count; ++i) {
     puts_(&body, i ? ",{\"titleId\":" : "{\"titleId\":");
     put_json_string(&body, rows[i].title);
@@ -1667,8 +1680,12 @@ static int handle(int socket) {
   } else if (!strcmp(target, "/row") && (get || post)) {
     if (!query_value(query, "user", user, sizeof user) || !is_user_id(user))
       respond_error(socket, 400, "user must be 10 digits.");
-    else if (get) get_row(socket, user);
-    else if (!authorized) respond_error(socket, 403, "Missing the X-Lineup header.");
+    else if (get) {
+      char tab[8] = "games";
+      query_value(query, "tab", tab, sizeof tab);
+      if (strcmp(tab, "games") && strcmp(tab, "media")) respond_error(socket, 400, "tab must be games or media.");
+      else get_row(socket, user, !strcmp(tab, "media"));
+    } else if (!authorized) respond_error(socket, 403, "Missing the X-Lineup header.");
     else post_row(socket, user, body);
   } else if (post && !strncmp(target, "/pins/", 6)) {
     if (!authorized) respond_error(socket, 403, "Missing the X-Lineup header.");
@@ -1848,6 +1865,13 @@ static void test_pins(void) {
   const char* one = "0000000001";
   int slots[MAX_GAMES];
   given = scalar("SELECT MAX(lastAccessIndex) FROM tbl_iconinfo_0000000001");
+  // The Media tab holds the one app at 188.
+  {
+    static Row media[MAX_GAMES];
+    sqlite3* db = open_db(0);
+    assert(read_tab(db, one, MEDIA_TAB, media, NULL, MAX_GAMES) == 1 && !strcmp(media[0].title, "PPSA00006"));
+    sqlite3_close(db);
+  }
   // A row pinned in full is refused: one home place stays free.
   {
     static Row full[MAX_GAMES];

@@ -3,7 +3,7 @@
 import {Archives, Downloads, FileSystem, Http, Payloads} from '@ps5-react/core';
 import {T} from './i18n.js';
 
-export const VERSION = '1.4.3';
+export const VERSION = '1.5.0';
 const BASE = 'http://127.0.0.1:9077';
 
 /** An error the app shows as is: a short title and what to do about it. */
@@ -95,9 +95,12 @@ async function read(path, what) {
 }
 
 export const profiles = async () => (await read('/profiles', T.service.profiles)).profiles ?? [];
-/** {games, pins}: each game's `pinned` is its slot or null; `pins` is 'on', 'missing' (triggers lost) or 'off'. */
-export async function row(user) {
-  const data = await read(`/row?user=${user}`, T.service.row);
+/**
+ * {games, pins} of `tab` ('games' or 'media'): each game's `pinned` is its slot or null; `pins` is 'on', 'missing'
+ * (triggers lost) or 'off'. The Media tab is read only and has no pins.
+ */
+export async function row(user, tab = 'games') {
+  const data = await read(`/row?user=${user}&tab=${tab}`, T.service.row);
   return {games: data.games ?? [], pins: data.pins ?? 'off'};
 }
 export const iconUrl = game => `${BASE}/icon/${game.titleId}?m=${game.icon}`;

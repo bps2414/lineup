@@ -59,6 +59,12 @@ const en = {
       + 'Free the first place for it?',
     freeFirst: 'Free the first place',
   },
+  tabs: {
+    games: 'Games', media: 'Media',
+    readOnly: 'The Media tab is read only for now.',
+    saveFirst: 'Save or discard your changes first.',
+    emptyMedia: ['The Media tab is empty', 'This profile has no apps on the Media tab.'],
+  },
   report: {
     save: 'Save a report for a bug',
     title: 'Report saved',
@@ -176,6 +182,12 @@ const pt = {
     fullBody: 'O último jogo aberto fica sem lugar ali e vai parar na biblioteca de jogos. '
       + 'Liberar o primeiro lugar para ele?',
     freeFirst: 'Liberar o primeiro lugar',
+  },
+  tabs: {
+    games: 'Jogos', media: 'Mídia',
+    readOnly: 'Por enquanto a aba Mídia é só para ver.',
+    saveFirst: 'Salve ou descarte as mudanças primeiro.',
+    emptyMedia: ['A aba Mídia está vazia', 'Este perfil não tem apps na aba Mídia.'],
   },
   report: {
     save: 'Salvar um relatório para um bug',
