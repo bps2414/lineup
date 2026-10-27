@@ -3,7 +3,7 @@
 import {Archives, Downloads, FileSystem, Http, Payloads} from '@ps5-react/core';
 import {T} from './i18n.js';
 
-export const VERSION = '1.4.1';
+export const VERSION = '1.4.2';
 const BASE = 'http://127.0.0.1:9077';
 
 /** An error the app shows as is: a short title and what to do about it. */

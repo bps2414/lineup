@@ -81,7 +81,7 @@ formulário simples.
 
 Os erros vêm como `{"error": "<detalhe em inglês>"}`:
 
-- 400: pedido malformado.
+- 400: pedido malformado, ou todos os lugares da tela inicial fixos (veja Jogos fixos).
 - 403: falta o cabeçalho `X-Lineup`.
 - 404: o perfil ou o ícone não existe.
 - 409: a fileira mudou desde a leitura.
@@ -103,6 +103,11 @@ CTE, funções de janela, UPSERT nem `RETURNING`.
 Ao salvar, o lineupd apaga os triggers do perfil, grava a ordem e os fixos e recria os triggers se houver fixos,
 tudo numa transação só. Quando nenhum perfil tem mais jogos fixos, as tabelas também saem. Reconstruir o banco de
 dados pode apagar os triggers; aí o `/row` responde `"missing"` e o app oferece fixar de novo.
+
+Um dos primeiros `HOME_LIMIT` (12) lugares sempre fica sem fixar: com todos fixos, o último jogo aberto, como a
+entrada do jailbreak, fica sem lugar na tela inicial e vai parar na biblioteca de jogos. O app mantém esse lugar
+livre ("Fixar toda a fileira" deixa o primeiro) e oferece liberar o primeiro lugar de uma fileira toda fixa pela
+1.4.1 ou anterior; o `save_order` recusa essa fileira com 400.
 
 ## Atualização
 

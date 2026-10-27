@@ -39,6 +39,14 @@ const sortKey = name => name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCas
 // Games moved or pinned/unpinned since the row was read. `pinned` maps the games read pinned to their slots.
 const changed = s => s.order.reduce((count, id, i) => count + (s.home[id] !== i || !s.pins[id] !== !(id in s.pinned)), 0);
 const allPinned = pinned => Object.fromEntries(Object.keys(pinned).map(id => [id, true]));
+// Every home place pinned: the last game opened (the jailbreak's entry, say) would have no place there and end up in
+// the game library, so one stays free. lineupd refuses such a save too.
+const homeFull = (order, pins) => order.slice(0, HOME_LIMIT).every(id => pins[id]);
+const without = (pins, id) => {
+  const rest = {...pins};
+  delete rest[id];
+  return rest;
+};
 
 // The order the pins ask for, as lineupd's triggers work it out: pinned games at their slots (packed at the end of
 // a row that got shorter), the others in their order in the free places.
@@ -295,10 +303,11 @@ function App() {
       if (game.pinned !== null && game.pinned !== undefined) pinned[game.titleId] = game.pinned;
     });
     const base = list.map(game => game.titleId);
-    const missing = pins === 'missing';
+    // A row pinned in full by 1.4.1 or older.
+    const layer = pins === 'missing' ? 'pinsMissing' : pins === 'on' && homeFull(base, allPinned(pinned)) ? 'pinsFull' : null;
     light(false);
     patch({phase: 'row', profiles, user, games, home, base, order: base, pins: allPinned(pinned), pinned, focus: 0,
-      dir: 1, lifted: false, layer: missing ? 'pinsMissing' : null, target: null, pending: missing ? null : {index: 0}});
+      dir: 1, lifted: false, layer, target: null, pending: layer ? null : {index: 0}});
   };
 
   const boot = async () => {
@@ -418,6 +427,11 @@ function App() {
       toast(T.alreadySaved);
       return;
     }
+    if (homeFull(now.order, now.pins)) {
+      close();
+      toast(T.pins.keepFree);
+      return;
+    }
     light(false);
     patch({lifted: false, layer: 'busy'});
     const result = await api.save(now.user, now.order, now.games, now.pins);
@@ -480,13 +494,11 @@ function App() {
       return true;
     }
     if (action === 'square') {
-      patch(p => {
-        const id = p.order[p.focus];
-        const pins = {...p.pins};
-        if (pins[id]) delete pins[id];
-        else pins[id] = true;
-        return {pins};
-      });
+      const p = ref.current;
+      const id = p.order[p.focus];
+      const pins = p.pins[id] ? without(p.pins, id) : {...p.pins, [id]: true};
+      if (!p.pins[id] && homeFull(p.order, pins)) toast(T.pins.keepFree);
+      else patch({pins});
       return true;
     }
     return false;
@@ -496,14 +508,17 @@ function App() {
     patch(p => ({order: p.base, pins: allPinned(p.pinned), layer: null, pending: {index: 0}}));
     toast(T.discarded);
   };
-  const pinAll = on => patch(p => ({pins: on ? Object.fromEntries(p.order.map(id => [id, true])) : {}, layer: null,
-    pending: {index: p.focus}}));
-  // Puts the games back at their slots and saves, which creates the triggers again.
+  // The whole row but its first place, which stays free.
+  const pinAll = on => patch(p => ({pins: on ? Object.fromEntries(p.order.slice(1).map(id => [id, true])) : {},
+    layer: null, pending: {index: p.focus}}));
+  // Puts the games back at their slots and saves, which creates the triggers again. A row pinned in full gets its
+  // first place freed.
   const reapply = () => {
     const now = ref.current;
     const order = pinnedOrder(now.order, now.pinned);
-    patch({order});
-    save(null, {...now, order}, true);
+    const pins = homeFull(order, now.pins) ? without(now.pins, order[0]) : now.pins;
+    patch({order, pins});
+    save(null, {...now, order, pins}, true);
   };
   const unpinEverywhere = async () => {
     patch({layer: 'busy'});
@@ -661,6 +676,12 @@ function App() {
       {s.layer === 'pinsMissing' ? (
         <Dialog title={T.pins.missingTitle} body={T.pins.missingBody} onBack={close}>
           <Button label={T.pins.reapply} onPress={reapply} />
+          <Button label={T.pins.later} onPress={close} />
+        </Dialog>
+      ) : null}
+      {s.layer === 'pinsFull' ? (
+        <Dialog title={T.pins.fullTitle} body={T.pins.fullBody} onBack={close}>
+          <Button label={T.pins.freeFirst} onPress={reapply} />
           <Button label={T.pins.later} onPress={close} />
         </Dialog>
       ) : null}
