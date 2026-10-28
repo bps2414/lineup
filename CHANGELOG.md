@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.3
+
+- Pinned games only react to the Games tab. Opening, installing or removing an app on the Media tab no longer
+  runs Lineup's reorder. Pins saved by an older version switch over by themselves the first time Lineup opens.
+- Options → Save a report for a bug writes `/data/lineup/report.json`: the apps on the Games and Media tabs and
+  how the home screen stores them, with no account details. Copy it over FTP and attach it to your issue.
+
 ## 1.4.2
 
 - One place on the home screen always stays unpinned. With every place pinned, the last game opened (the

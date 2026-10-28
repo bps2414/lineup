@@ -527,6 +527,15 @@ function App() {
     close();
     toast(error || T.pins.removed);
   };
+  const saveReport = async () => {
+    patch({layer: 'busy'});
+    const {path, error} = await api.report();
+    if (path) patch({layer: 'report', report: path});
+    else {
+      close();
+      toast(error);
+    }
+  };
   const sortAZ = () => patch(p => {
     const id = p.order[p.focus];
     const order = p.order.slice().sort((a, b) => {
@@ -632,6 +641,7 @@ function App() {
             ) : null,
             <SheetItem key="updates" label={T.menu.updates} onPress={() => patch({layer: 'updates'})} />,
             <SheetItem key="remove-pins" label={T.pins.removeAll} onPress={() => patch({layer: 'removePins'})} />,
+            <SheetItem key="report" label={T.report.save} onPress={saveReport} />,
           ] : s.profiles.map(item => (
             <SheetItem key={item.userId} label={item.name} checked={item.userId === s.user}
               leading={<Avatar profile={item} size={40} />}
@@ -671,6 +681,11 @@ function App() {
         <Dialog title={T.pins.removeTitle} body={T.pins.removeBody} onBack={() => patch({layer: 'menu'})}>
           <Button label={T.pins.removeConfirm} onPress={unpinEverywhere} />
           <Button label={T.pins.cancel} onPress={() => patch({layer: 'menu'})} />
+        </Dialog>
+      ) : null}
+      {s.layer === 'report' ? (
+        <Dialog title={T.report.title} body={T.report.body(s.report)} onBack={close}>
+          <Button label={T.report.ok} onPress={close} />
         </Dialog>
       ) : null}
       {s.layer === 'pinsMissing' ? (

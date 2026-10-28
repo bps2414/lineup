@@ -3,7 +3,7 @@
 import {Archives, Downloads, FileSystem, Http, Payloads} from '@ps5-react/core';
 import {T} from './i18n.js';
 
-export const VERSION = '1.4.2';
+export const VERSION = '1.4.3';
 const BASE = 'http://127.0.0.1:9077';
 
 /** An error the app shows as is: a short title and what to do about it. */
@@ -129,6 +129,16 @@ export async function unpinAll() {
     return reply.ok ? '' : T.pins.removeFailed(reply.data.error ?? T.service.status(reply.status));
   } catch {
     return T.pins.removeFailed(T.pins.noAnswer);
+  }
+}
+
+/** Writes a report of the Games and Media tabs for a bug report. Resolves to {path} or {error}. */
+export async function report() {
+  try {
+    const reply = await call('/report', {method: 'POST', timeoutMs: 15000});
+    return reply.ok ? {path: reply.data.path} : {error: T.report.failed(reply.data.error ?? T.service.status(reply.status))};
+  } catch {
+    return {error: T.report.failed(T.pins.noAnswer)};
   }
 }
 
