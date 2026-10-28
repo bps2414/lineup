@@ -3,7 +3,7 @@
 import {Archives, Downloads, FileSystem, Http, Payloads} from '@ps5-react/core';
 import {T} from './i18n.js';
 
-export const VERSION = '1.4.3';
+export const VERSION = '1.5.0';
 const BASE = 'http://127.0.0.1:9077';
 
 /** An error the app shows as is: a short title and what to do about it. */
@@ -95,24 +95,27 @@ async function read(path, what) {
 }
 
 export const profiles = async () => (await read('/profiles', T.service.profiles)).profiles ?? [];
-/** {games, pins}: each game's `pinned` is its slot or null; `pins` is 'on', 'missing' (triggers lost) or 'off'. */
-export async function row(user) {
-  const data = await read(`/row?user=${user}`, T.service.row);
+/**
+ * {games, pins} of `tab` ('games' or 'media'): each app's `pinned` is its slot or null; `pins` is 'on', 'missing'
+ * (triggers lost) or 'off'.
+ */
+export async function row(user, tab = 'games') {
+  const data = await read(`/row?user=${user}&tab=${tab}`, T.service.row);
   return {games: data.games ?? [], pins: data.pins ?? 'off'};
 }
 export const iconUrl = game => `${BASE}/icon/${game.titleId}?m=${game.icon}`;
 export const avatarUrl = profile => `${BASE}/avatar/${profile.userId}?m=${profile.avatar}`;
 
 /**
- * Saves `order` (titleIds) for `user`, sending each game's index as it was read and pinning the games in `pins`
- * where they stand. Resolves to {ok: true} or {ok: false, stale, message}; `stale` means the row changed since it
- * was read.
+ * Saves `order` (titleIds) as `user`'s `tab`, sending each app's index as it was read and pinning the apps in
+ * `pins` where they stand. Resolves to {ok: true} or {ok: false, stale, message}; `stale` means the row changed
+ * since it was read.
  */
-export async function save(user, order, games, pins) {
+export async function save(user, tab, order, games, pins) {
   const body = `LIN1\n${order.map(id => `${id} ${games[id].index}${pins[id] ? ' pin' : ''}\n`).join('')}`;
   let reply;
   try {
-    reply = await call(`/row?user=${user}`, {method: 'POST', body});
+    reply = await call(`/row?user=${user}&tab=${tab}`, {method: 'POST', body});
   } catch {
     return {ok: false, stale: false, message: T.service.saveNoAnswer};
   }

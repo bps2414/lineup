@@ -24,6 +24,8 @@ ordem na TV. Depois, o serviço local dele grava a nova ordem onde a tela inicia
   tira ele do lugar; o resto da fileira segue a regra do sistema. Em Opções dá para fixar a fileira
   toda, desafixar todos ou remover os jogos fixos de todos os perfis. Vale a partir da 1.3.0.
 - **Ordenar de A a Z**, descartar mudanças e contagem de jogos que mudaram.
+- **Aba Mídia.** L1 e R1 trocam entre as abas Jogos e Mídia. Os apps da Mídia se movem e fixam como os jogos,
+  cada aba com os seus fixos.
 - **Aplica ao sair.** Salvar fecha o app, e a tela inicial volta com a nova ordem. Não precisa
   reiniciar.
 - **Atualização no app.** O Lineup procura uma versão nova ao abrir e mostra as novidades (Opções →
@@ -62,6 +64,7 @@ Use um ou outro. Os dois registram o title ID `PPSA99077`.
 | Direcional | Move o foco | Leva o jogo |
 | □ | Fixa ou desafixa o jogo em foco | Fixa ou desafixa o jogo |
 | △ | Salva | |
+| L1 / R1 | Aba Jogos / aba Mídia | |
 | Options | Menu Opções | |
 | ◯ | Sai (pergunta se quer salvar as mudanças) | Devolve o jogo |
 

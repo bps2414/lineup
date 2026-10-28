@@ -1,11 +1,18 @@
 # Changelog
 
-## 1.4.3
+## 1.5.0
 
-- Pinned games only react to the Games tab. Opening, installing or removing an app on the Media tab no longer
-  runs Lineup's reorder. Pins saved by an older version switch over by themselves the first time Lineup opens.
-- Options → Save a report for a bug writes `/data/lineup/report.json`: the apps on the Games and Media tabs and
-  how the home screen stores them, with no account details. Copy it over FTP and attach it to your issue.
+1.4.3 was not released; its changes ship here.
+
+- L1 and R1 switch between the Games and Media tabs. The Media tab works like the Games tab: move its apps and
+  pin them (the jailbreak, Shadow Mount+, a file manager), so they stay on the home screen instead of dropping into
+  the library. Each tab keeps its own pins, and one of the first 11 Media places stays free for the last app
+  opened. Unsaved changes on a tab must be saved or discarded before switching.
+- Opening, installing or removing an app only reorders its own tab. Pins saved by an older version switch over
+  by themselves, after a backup, the first time Lineup opens.
+- Options, Save a report for a bug, writes `/data/lineup/report.json`: the apps on the Games and Media tabs and
+  how the home screen stores them, with each profile's number but no names or passwords. Copy it over FTP and
+  attach it to your issue.
 
 ## 1.4.2
 

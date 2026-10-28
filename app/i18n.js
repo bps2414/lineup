@@ -41,23 +41,28 @@ const en = {
   },
   pins: {
     pinnedAt: n => `pinned at ${englishOrdinal(n)}`,
-    pinAll: 'Pin the whole row', unpinAll: 'Unpin all', removeAll: 'Remove pinned games from every profile',
-    removeTitle: 'Remove pinned games from every profile?',
-    removeBody: "Every profile goes back to the system's rule: the last game opened comes first. "
+    pinAll: 'Pin the whole row', unpinAll: 'Unpin all', removeAll: 'Remove pinned apps from every profile',
+    removeTitle: 'Remove pinned apps from every profile?',
+    removeBody: "Every profile goes back to the system's rule: the last app opened comes first. "
       + 'The current order stays as it is.',
     removeConfirm: 'Remove', cancel: 'Cancel',
-    removed: 'Pinned games removed from every profile.',
-    removeFailed: detail => `Could not remove the pinned games (${detail}).`,
+    removed: 'Pinned apps removed from every profile.',
+    removeFailed: detail => `Could not remove the pinned apps (${detail}).`,
     noAnswer: 'the service did not answer',
-    missingTitle: 'The pinned games came loose',
-    missingBody: 'The home screen database was rebuilt or updated, so the games no longer hold their places. '
+    missingTitle: 'The pinned apps came loose',
+    missingBody: 'The home screen database was rebuilt or updated, so the apps no longer hold their places. '
       + 'Pin them again?',
     reapply: 'Pin again', later: 'Not now',
-    keepFree: 'Leave one place on the home screen unpinned, for the last game opened.',
+    keepFree: 'Leave one place on the home screen unpinned, for the last app opened.',
     fullTitle: 'Every place on the home screen is pinned',
-    fullBody: 'The last game opened has no place left there and ends up in the game library. '
+    fullBody: 'The last app opened has no place left there and ends up in the library. '
       + 'Free the first place for it?',
     freeFirst: 'Free the first place',
+  },
+  tabs: {
+    games: 'Games', media: 'Media',
+    saveFirst: 'Save or discard your changes first.',
+    emptyMedia: ['The Media tab is empty', 'This profile has no apps on the Media tab.'],
   },
   report: {
     save: 'Save a report for a bug',
@@ -159,23 +164,28 @@ const pt = {
   },
   pins: {
     pinnedAt: n => `fixo no ${n}º`,
-    pinAll: 'Fixar toda a fileira', unpinAll: 'Desafixar todos', removeAll: 'Remover jogos fixos de todos os perfis',
-    removeTitle: 'Remover os jogos fixos de todos os perfis?',
-    removeBody: 'Todos os perfis voltam à regra do sistema: o último jogo aberto vai para a frente. '
+    pinAll: 'Fixar toda a fileira', unpinAll: 'Desafixar todos', removeAll: 'Remover apps fixos de todos os perfis',
+    removeTitle: 'Remover os apps fixos de todos os perfis?',
+    removeBody: 'Todos os perfis voltam à regra do sistema: o último app aberto vai para a frente. '
       + 'A ordem atual continua como está.',
     removeConfirm: 'Remover', cancel: 'Cancelar',
-    removed: 'Jogos fixos removidos de todos os perfis.',
-    removeFailed: detail => `Não consegui remover os jogos fixos (${detail}).`,
+    removed: 'Apps fixos removidos de todos os perfis.',
+    removeFailed: detail => `Não consegui remover os apps fixos (${detail}).`,
     noAnswer: 'o serviço não respondeu',
-    missingTitle: 'Os jogos fixos se soltaram',
-    missingBody: 'O banco de dados da tela inicial foi reconstruído ou atualizado, e os jogos não seguram mais o '
+    missingTitle: 'Os apps fixos se soltaram',
+    missingBody: 'O banco de dados da tela inicial foi reconstruído ou atualizado, e os apps não seguram mais o '
       + 'lugar. Fixar de novo?',
     reapply: 'Fixar de novo', later: 'Agora não',
-    keepFree: 'Deixe um lugar da tela inicial sem fixar, para o último jogo aberto.',
+    keepFree: 'Deixe um lugar da tela inicial sem fixar, para o último app aberto.',
     fullTitle: 'Todos os lugares da tela inicial estão fixos',
-    fullBody: 'O último jogo aberto fica sem lugar ali e vai parar na biblioteca de jogos. '
+    fullBody: 'O último app aberto fica sem lugar ali e vai parar na biblioteca. '
       + 'Liberar o primeiro lugar para ele?',
     freeFirst: 'Liberar o primeiro lugar',
+  },
+  tabs: {
+    games: 'Jogos', media: 'Mídia',
+    saveFirst: 'Salve ou descarte as mudanças primeiro.',
+    emptyMedia: ['A aba Mídia está vazia', 'Este perfil não tem apps na aba Mídia.'],
   },
   report: {
     save: 'Salvar um relatório para um bug',

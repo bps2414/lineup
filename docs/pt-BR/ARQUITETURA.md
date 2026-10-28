@@ -69,10 +69,10 @@ formulário simples.
 | --- | --- |
 | `GET /version` | `{"version"}` |
 | `GET /profiles` | `{"profiles":[{"userId","hex","name","avatar"}]}`; `avatar` é o mtime da foto, ou 0 |
-| `GET /row?user=<10 dígitos>` | `{"user","pins","games":[{"titleId","name","index","icon","pinned"}]}`, na ordem da tela inicial; `pinned` é a posição fixa ou `null`, `pins` é `"on"`, `"missing"` (fixos sem os triggers) ou `"off"` |
+| `GET /row?user=<10 dígitos>[&tab=games\|media]` | `{"user","tab","pins","games":[{"titleId","name","index","icon","pinned"}]}`, na ordem da tela inicial; `games` é a aba Jogos (`dispLocation = 138`), `media` a aba Mídia (`188`); `pinned` é a posição fixa ou `null`, `pins` é `"on"`, `"missing"` (fixos sem os triggers) ou `"off"` |
 | `GET /icon/<titleId>` | `image/png`, o ícone que a tela inicial desenha |
 | `GET /avatar/<10 dígitos>` | `image/png`, o `avatar.png` de `/system_data/priv/cache/profile/0x<id>/` (8 ou 16 dígitos hex) |
-| `POST /row?user=<10 dígitos>` | corpo `LIN1\n` e depois `<titleId> <índice>[ pin]\n` por jogo, na nova ordem, com o índice lido; ` pin` fixa o jogo naquela posição. `{"ok","backup","integrity"}` |
+| `POST /row?user=<10 dígitos>[&tab=games\|media]` | corpo `LIN1\n` e depois `<titleId> <índice>[ pin]\n` por app, na nova ordem, com o índice lido; ` pin` fixa o app naquela posição. `{"ok","backup","integrity"}` |
 | `POST /pins/off?user=<10 dígitos>` | `{"ok","backup"}`: desafixa os jogos daquele perfil e apaga os triggers dele |
 | `POST /pins/uninstall` | `{"ok","backup"}`: remove todos os fixos, triggers e tabelas que o Lineup pôs no `app.db` |
 | `POST /report` | `{"ok","path"}`: grava `/data/lineup/report.json` com os triggers do `app.db` e, por perfil, os apps das abas Jogos (138) e Mídia (188), mais a `tbl_contentinfo`, só as colunas que diferenciam as duas abas |
@@ -95,21 +95,23 @@ O app mostra um título próprio no idioma da interface e põe o detalhe depois.
 O sistema leva um jogo para a frente toda vez que ele abre. Para um jogo fixo continuar no lugar, o lineupd
 cria três triggers na `tbl_iconinfo_<user>` do perfil, dentro do `app.db`: `lineup_pin_u_<user>` (depois de um
 update que aumenta o `lastAccessIndex`, o que abrir um jogo faz duas vezes), `lineup_pin_i_<user>` (instalar) e
-`lineup_pin_d_<user>` (desinstalar), só para jogos da fileira (`visible = 1` e `dispLocation = 138`): um app da
-aba Mídia abre, instala e sai como se o Lineup não existisse. Eles rodam dentro da própria gravação do sistema e reordenam a fileira antes
-de a tela inicial ler de novo: os fixos ficam na sua posição (vão para o fim se a fileira encolher) e os outros
+`lineup_pin_d_<user>` (desinstalar), para os apps das abas Jogos e Mídia (`visible = 1` e `dispLocation` 138 ou
+188). Eles rodam dentro da própria gravação do sistema e reordenam a aba do app que os disparou, e só ela, antes
+de a tela inicial ler de novo. Cada aba tem os seus fixos: um app fica numa aba só, então a posição dele é um
+lugar daquela aba. Dentro da aba, os fixos ficam na sua posição (vão para o fim se a fileira encolher) e os outros
 ocupam as posições livres pela ordem de uso. Como ao salvar, a reordenação só reaproveita índices que a fileira
 já tem. As posições ficam em `lineup_pin`; `lineup_seq` e `lineup_tmp` são tabelas auxiliares. O SQL não usa
 CTE, funções de janela, UPSERT nem `RETURNING`.
 
-Ao salvar, o lineupd apaga os triggers do perfil, grava a ordem e os fixos e recria os triggers se houver fixos,
-tudo numa transação só. Quando nenhum perfil tem mais jogos fixos, as tabelas também saem. Reconstruir o banco de
+Ao salvar uma aba, o lineupd apaga os triggers do perfil, grava a ordem e os fixos daquela aba (os da outra
+ficam) e recria os triggers enquanto o perfil tiver fixos em alguma aba, tudo numa transação só. Quando nenhum perfil tem mais jogos fixos, as tabelas também saem. Reconstruir o banco de
 dados pode apagar os triggers; aí o `/row` responde `"missing"` e o app oferece fixar de novo. Os triggers da
-1.4.2 e anteriores também rodavam para a aba Mídia; ao iniciar, o lineupd troca esses pelos atuais, depois de um
-backup.
+1.4.3 e anteriores só fixavam na aba Jogos (os da 1.4.2 mexiam nela qualquer que fosse o app); ao iniciar, o
+lineupd troca esses pelos atuais, depois de um backup.
 
-Um dos primeiros `HOME_LIMIT` (12) lugares sempre fica sem fixar: com todos fixos, o último jogo aberto, como a
-entrada do jailbreak, fica sem lugar na tela inicial e vai parar na biblioteca de jogos. O app mantém esse lugar
+Um dos primeiros `HOME_LIMIT` (12) lugares da aba Jogos, e dos primeiros `MEDIA_HOME_LIMIT` (11) da aba Mídia,
+sempre fica sem fixar: com todos fixos, o último app aberto, como a entrada do jailbreak, fica sem lugar na tela
+inicial e vai parar na biblioteca. O app mantém esse lugar
 livre ("Fixar toda a fileira" deixa o primeiro) e oferece liberar o primeiro lugar de uma fileira toda fixa pela
 1.4.1 ou anterior; o `save_order` recusa essa fileira com 400.
 

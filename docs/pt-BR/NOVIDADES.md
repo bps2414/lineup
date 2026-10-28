@@ -2,13 +2,19 @@
 
 As notas que o app mostra ao atualizar. Cada versão aqui acompanha a mesma seção do `CHANGELOG.md`.
 
-## 1.4.3
+## 1.5.0
 
-- Os jogos fixos só reagem à aba Jogos. Abrir, instalar ou remover um app da aba Mídia não roda mais a
-  reordenação do Lineup. Os fixos salvos por uma versão anterior passam a funcionar assim sozinhos na primeira vez
-  que o Lineup abre.
-- Opções → "Salvar um relatório para um bug" grava `/data/lineup/report.json`: os apps das abas Jogos e Mídia e
-  como a tela inicial guarda cada um, sem dados da conta. Copie por FTP e anexe na sua issue.
+A 1.4.3 não saiu; as mudanças dela vêm aqui.
+
+- L1 e R1 trocam entre as abas Jogos e Mídia. A aba Mídia funciona como a de Jogos: dá para mover e fixar os
+  apps (o jailbreak, o Shadow Mount+, um gerenciador de arquivos), e eles ficam na tela inicial em vez de cair na
+  biblioteca. Cada aba tem os seus fixos, e um dos 11 primeiros lugares da Mídia fica livre para o último app
+  aberto. Mudanças não salvas numa aba precisam ser salvas ou descartadas antes de trocar.
+- Abrir, instalar ou remover um app só reordena a aba dele. Os fixos salvos por uma versão anterior passam a
+  funcionar assim sozinhos, depois de um backup, na primeira vez que o Lineup abre.
+- Em Opções, "Salvar um relatório para um bug" grava `/data/lineup/report.json`: os apps das abas Jogos e Mídia e
+  como a tela inicial guarda cada um, com o número de cada perfil mas sem nomes nem senhas. Copie por FTP e anexe
+  na sua issue.
 
 ## 1.4.2
 
