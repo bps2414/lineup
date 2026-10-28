@@ -513,18 +513,21 @@ static int update_pin_triggers(void) {
   sqlite3* db = open_db(1);
   if (!db) return -1;
   static char users[MAX_GAMES][16];
-  int count = 0, failed = 0;
+  int count = 0, failed = 0, step = SQLITE_DONE;
   sqlite3_stmt* statement;
   if (sqlite3_prepare_v2(db, "SELECT DISTINCT substr(name, 14) FROM sqlite_master WHERE type = 'trigger' AND name GLOB "
                          "'lineup_pin_[uid]_*' AND sql NOT LIKE '%" PIN_ROW_ONLY "%'", -1, &statement, NULL) != SQLITE_OK)
     failed = 1;
   else {
-    while (count < MAX_GAMES && sqlite3_step(statement) == SQLITE_ROW) {
+    while (count < MAX_GAMES && (step = sqlite3_step(statement)) == SQLITE_ROW) {
       const char* user = (const char*)sqlite3_column_text(statement, 0);
       if (user && is_user_id(user)) snprintf(users[count++], sizeof users[0], "%s", user);
     }
+    // A scan cut short by an error would leave the other profiles with the old triggers.
+    if (step != SQLITE_ROW && step != SQLITE_DONE) failed = 1;
     sqlite3_finalize(statement);
   }
+  if (failed) LOG("pin triggers not updated: %s", sqlite3_errmsg(db));
   if (!failed && count) {
     char backup[256] = "", message[300] = "";
     static char sql[16 * 1024];
@@ -791,12 +794,13 @@ static void diag_error(Buffer* b, const char* message) {
   puts_(b, "}");
 }
 
-// Each result row as an object keyed by column name.
-static void diag_query(Buffer* b, sqlite3* db, const char* sql) {
+// Each result row as an object keyed by column name. Returns -1 when the query fails, with the error in `b`.
+static int diag_query(Buffer* b, sqlite3* db, const char* sql) {
   sqlite3_stmt* statement;
-  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) { diag_error(b, sqlite3_errmsg(db)); return; }
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) { diag_error(b, sqlite3_errmsg(db)); return -1; }
   puts_(b, "[");
-  for (int row = 0; sqlite3_step(statement) == SQLITE_ROW; ++row) {
+  int step, row = 0;
+  for (; (step = sqlite3_step(statement)) == SQLITE_ROW; ++row) {
     puts_(b, row ? ",{" : "{");
     for (int column = 0; column < sqlite3_column_count(statement); ++column) {
       if (column) puts_(b, ",");
@@ -809,8 +813,13 @@ static void diag_query(Buffer* b, sqlite3* db, const char* sql) {
     }
     puts_(b, "}");
   }
+  if (step != SQLITE_DONE) {
+    puts_(b, row ? "," : "");
+    diag_error(b, sqlite3_errmsg(db));
+  }
   sqlite3_finalize(statement);
   puts_(b, "]");
+  return step == SQLITE_DONE ? 0 : -1;
 }
 
 // Writes report_dir/report.json, its path in `path`. Returns the HTTP status; `message` explains a failure.
@@ -818,13 +827,20 @@ static int write_report(char* path, size_t path_size, char* message, size_t mess
   sqlite3* db = open_db(0);
   if (!db) { snprintf(message, message_size, "Could not open the home screen database."); return 500; }
   Buffer b = {0};
+  // A query that fails still leaves its error in the file, which is saved anyway and reported as incomplete.
+  int failed = 0;
+  char error[200] = "";
   puts_(&b, "{\"version\":\"" LINEUPD_VERSION "\",\"triggers\":");
-  diag_query(&b, db, "SELECT name, tbl_name, CASE WHEN name GLOB 'lineup_pin_*' THEN sql LIKE '%" PIN_ROW_ONLY "%' END "
-                     "AS current FROM sqlite_master WHERE type = 'trigger' ORDER BY name");
+  failed |= diag_query(&b, db, "SELECT name, tbl_name, CASE WHEN name GLOB 'lineup_pin_*' THEN sql LIKE '%" PIN_ROW_ONLY
+                       "%' END AS current FROM sqlite_master WHERE type = 'trigger' ORDER BY name");
+  if (failed && !*error) snprintf(error, sizeof error, "%s", sqlite3_errmsg(db));
   puts_(&b, ",\"profiles\":[");
   sqlite3_stmt* statement;
   if (sqlite3_prepare_v2(db, "SELECT substr(name, 14) FROM sqlite_master WHERE type = 'table' AND name GLOB "
-                         "'tbl_iconinfo_[0-9]*' ORDER BY name", -1, &statement, NULL) == SQLITE_OK) {
+                         "'tbl_iconinfo_[0-9]*' ORDER BY name", -1, &statement, NULL) != SQLITE_OK) {
+    failed = -1;
+    if (!*error) snprintf(error, sizeof error, "%s", sqlite3_errmsg(db));
+  } else {
     for (int first = 1; sqlite3_step(statement) == SQLITE_ROW;) {
       const char* user = (const char*)sqlite3_column_text(statement, 0);
       if (!user || !is_user_id(user)) continue;
@@ -836,24 +852,34 @@ static int write_report(char* path, size_t path_size, char* message, size_t mess
       snprintf(sql, sizeof sql, "SELECT titleId, titleName, dispLocation, visible, lastAccessIndex, pinnedStatus, "
                "appDrmType, lastLaunchMethod, deeplinkUri, hubAppUri FROM tbl_iconinfo_%s WHERE dispLocation IN "
                "(138, 188) ORDER BY dispLocation, lastAccessIndex DESC", user);
-      diag_query(&b, db, sql);
+      if (diag_query(&b, db, sql)) {
+        failed = -1;
+        if (!*error) snprintf(error, sizeof error, "%s", sqlite3_errmsg(db));
+      }
       puts_(&b, "}");
     }
     sqlite3_finalize(statement);
   }
   puts_(&b, "],\"content\":");
-  diag_query(&b, db, "SELECT titleId, titleName, dispLocation, viewCategory, categoryType, appType, is3rdPartyVideoApp, "
-                     "appinfoContentType, contentStatus, installStatus, pprDeeplinkUri, pprHubAppUri FROM tbl_contentinfo "
-                     "ORDER BY dispLocation, titleId");
+  if (diag_query(&b, db, "SELECT titleId, titleName, dispLocation, viewCategory, categoryType, appType, "
+                 "is3rdPartyVideoApp, appinfoContentType, contentStatus, installStatus, pprDeeplinkUri, pprHubAppUri "
+                 "FROM tbl_contentinfo ORDER BY dispLocation, titleId")) {
+    failed = -1;
+    if (!*error) snprintf(error, sizeof error, "%s", sqlite3_errmsg(db));
+  }
   puts_(&b, "}\n");
   sqlite3_close(db);
   make_dirs(report_dir);
   snprintf(path, path_size, "%s/report.json", report_dir);
   FILE* file = b.data ? fopen(path, "wb") : NULL;
-  int failed = !file || fwrite(b.data, 1, b.size, file) != b.size;
-  if (file && fclose(file)) failed = 1;
+  int unwritten = !file || fwrite(b.data, 1, b.size, file) != b.size;
+  if (file && fclose(file)) unwritten = 1;
   free(b.data);
-  if (failed) { snprintf(message, message_size, "Could not write %s (%s).", path, strerror(errno)); return 500; }
+  if (unwritten) { snprintf(message, message_size, "Could not write %s (%s).", path, strerror(errno)); return 500; }
+  if (failed) {
+    snprintf(message, message_size, "Part of the database could not be read (%s); %s was saved without it.", error, path);
+    return 500;
+  }
   return 200;
 }
 
@@ -1806,7 +1832,7 @@ static long long scalar(const char* sql) {
 
 // Runs `format` (a statement, %1$s the user and %2$s a title) as the system would, outside Lineup.
 static void run(const char* format, const char* user, const char* title) {
-  char sql[512];
+  char sql[1024];
   snprintf(sql, sizeof sql, format, user, title);
   sqlite3* db = open_db(1);
   assert(db && sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK);
@@ -1913,10 +1939,17 @@ static void test_pins(void) {
   snprintf(raise, sizeof raise, "UPDATE tbl_iconinfo_%%1$s SET lastAccessIndex = %lld WHERE titleId = '%%2$s'", three);
   run(raise, one, "PPSA00003");
   expect_row(one, "31254");
-  // The report lists the triggers, current, and every profile.
+  // The report lists the triggers, current, and every profile. Without tbl_contentinfo it is saved but incomplete.
   {
     char path[256], message[300], text[4096] = "";
     report_dir = "/tmp/lineupd-test-report";
+    assert(write_report(path, sizeof path, message, sizeof message) == 500 && strstr(message, "was saved without it"));
+    run("CREATE TABLE tbl_contentinfo (titleId TEXT, titleName TEXT, dispLocation INTEGER, viewCategory INTEGER, "
+        "categoryType INTEGER, appType INTEGER, is3rdPartyVideoApp INTEGER, appinfoContentType INTEGER, contentStatus "
+        "INTEGER, installStatus INTEGER, pprDeeplinkUri TEXT, pprHubAppUri TEXT); ALTER TABLE tbl_iconinfo_%1$s ADD "
+        "pinnedStatus INTEGER; ALTER TABLE tbl_iconinfo_%1$s ADD appDrmType INTEGER; ALTER TABLE tbl_iconinfo_%1$s ADD "
+        "lastLaunchMethod INTEGER; ALTER TABLE tbl_iconinfo_%1$s ADD deeplinkUri TEXT; ALTER TABLE tbl_iconinfo_%1$s "
+        "ADD hubAppUri TEXT", one, "");
     assert(write_report(path, sizeof path, message, sizeof message) == 200);
     FILE* file = fopen(path, "rb");
     assert(file);
@@ -1935,7 +1968,8 @@ static void test_pins(void) {
   // Installing: the new game takes the first free place.
   given = scalar("SELECT MAX(lastAccessIndex) FROM tbl_iconinfo_0000000001") + 1;
   char sql[256];
-  snprintf(sql, sizeof sql, "INSERT INTO tbl_iconinfo_%%1$s VALUES ('%%2$s','Seven',%lld,1,138)", given);
+  snprintf(sql, sizeof sql, "INSERT INTO tbl_iconinfo_%%1$s (titleId, titleName, lastAccessIndex, visible, dispLocation) "
+           "VALUES ('%%2$s','Seven',%lld,1,138)", given);
   run(sql, one, "PPSA00007");
   expect_row(one, "372541");
   // Uninstalling: a game pinned past the end of the shorter row goes last.
