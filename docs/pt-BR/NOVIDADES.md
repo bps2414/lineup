@@ -4,9 +4,13 @@ As notas que o app mostra ao atualizar. Cada versão aqui acompanha a mesma seç
 
 ## 1.5.0
 
-- L1 e R1 trocam para a aba Mídia e de volta. Por enquanto a aba Mídia é só para ver: mostra os apps na ordem
-  da tela inicial, ainda sem mover nem fixar. Mudanças não salvas na aba Jogos precisam ser salvas ou
-  descartadas antes.
+- L1 e R1 trocam entre as abas Jogos e Mídia. A aba Mídia funciona como a de Jogos: dá para mover e fixar os
+  apps (o jailbreak, o Shadow Mount+, um gerenciador de arquivos), e eles ficam na tela inicial em vez de cair na
+  biblioteca. Cada aba tem os seus fixos, e um dos 11 primeiros lugares da Mídia fica livre para o último app
+  aberto. Mudanças não salvas numa aba precisam ser salvas ou descartadas antes de trocar.
+- Os fixos da 1.4.3 e anteriores são atualizados uma vez, depois de um backup, quando o lineupd inicia.
+- O relatório de bug avisa quando parte do banco não pôde ser lida e não diz mais que não tem dados da conta: ele
+  tem o número de cada perfil.
 
 ## 1.4.3
 

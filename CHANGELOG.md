@@ -2,8 +2,13 @@
 
 ## 1.5.0
 
-- L1 and R1 switch to the Media tab and back. The Media tab is read only for now: it shows its apps in home
-  order, with no moving or pinning yet. Unsaved changes on the Games tab must be saved or discarded first.
+- L1 and R1 switch between the Games and Media tabs. The Media tab works like the Games tab: move its apps and
+  pin them (the jailbreak, Shadow Mount+, a file manager), so they stay on the home screen instead of dropping into
+  the library. Each tab keeps its own pins, and one of the first 11 Media places stays free for the last app
+  opened. Unsaved changes on a tab must be saved or discarded before switching.
+- Pins from 1.4.3 and older are updated once, after a backup, when lineupd starts.
+- The bug report says when part of the database could not be read, and no longer claims it has no account data: it
+  has each profile's number.
 
 ## 1.4.3
 

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Lineup reorders the PS5 home-screen game row. The lineupd service (payloads/lineupd.c) reads and
 // saves the row; this app draws it, lifts the focused game with X and carries it with the D-pad. Square pins
-// the focused game where it stands when the order is saved. L1 and R1 switch to the Media tab, shown read only.
+// the focused game where it stands when the order is saved. L1 and R1 switch between the Games and Media tabs,
+// each with its own order and pins.
 //
 // Focus lives on invisible slots, one per position, laid out in a plain row so the focus manager moves
 // between them. The games are drawn apart, keyed by title, and only their transforms move: the focused
@@ -28,11 +29,12 @@ const LIFT_SCALE = 1.06;
 const BEFORE = 2;          // games drawn left of focus (off screen, ready to slide in)
 const AFTER = 8;
 
-// The home screen shows only the first games of the row; the rest are in the game library alone.
-// ponytail: 12 seen on one console (firmware 13.60); read it from the system if it turns out to vary.
+// The home screen shows only the first apps of each tab; the rest are in the library alone.
+// ponytail: 12 games seen on one console (firmware 13.60) and 11 media apps reported; read them from the system if
+// they turn out to vary. HOME_LIMIT and MEDIA_HOME_LIMIT in payloads/lineupd.c match.
 const HOME_LIMIT = 12;
-// ponytail: the Media tab's limit is not known yet, so it shows no home screen edge.
-const homeLimit = tab => (tab === 'games' ? HOME_LIMIT : Infinity);
+const MEDIA_HOME_LIMIT = 11;
+const homeLimit = tab => (tab === 'media' ? MEDIA_HOME_LIMIT : HOME_LIMIT);
 
 const SPRING = {type: 'spring', stiffness: 420, damping: 40};
 const TILE = {...SPRING, opacity: {type: 'tween', duration: 0.14}};
@@ -41,9 +43,9 @@ const sortKey = name => name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCas
 // Games moved or pinned/unpinned since the row was read. `pinned` maps the games read pinned to their slots.
 const changed = s => s.order.reduce((count, id, i) => count + (s.home[id] !== i || !s.pins[id] !== !(id in s.pinned)), 0);
 const allPinned = pinned => Object.fromEntries(Object.keys(pinned).map(id => [id, true]));
-// Every home place pinned: the last game opened (the jailbreak's entry, say) would have no place there and end up in
-// the game library, so one stays free. lineupd refuses such a save too.
-const homeFull = (order, pins) => order.slice(0, HOME_LIMIT).every(id => pins[id]);
+// Every home place of `tab` pinned: the last app opened (the jailbreak's entry, say) would have no place there and end
+// up in the library, so one stays free. lineupd refuses such a save too.
+const homeFull = (order, pins, tab) => order.slice(0, homeLimit(tab)).every(id => pins[id]);
 const without = (pins, id) => {
   const rest = {...pins};
   delete rest[id];
@@ -266,7 +268,6 @@ function Header({profile, tab}) {
 
 const H = T.hints;
 const ROW_HINTS = [['cross', H.lift], ['triangle', H.save], ['options', H.options], ['circle', H.quit]];
-const MEDIA_HINTS = [['options', H.options], ['circle', H.quit]];
 const LIFT_HINTS = [['dpad', H.move], ['cross', H.drop], ['circle', H.cancel]];
 const PICK_HINTS = [['cross', H.choose], ['circle', H.back]];
 
@@ -329,7 +330,7 @@ function App() {
     });
     const base = list.map(game => game.titleId);
     // A row pinned in full by 1.4.1 or older.
-    const layer = pins === 'missing' ? 'pinsMissing' : pins === 'on' && homeFull(base, allPinned(pinned)) ? 'pinsFull' : null;
+    const layer = pins === 'missing' ? 'pinsMissing' : pins === 'on' && homeFull(base, allPinned(pinned), tab) ? 'pinsFull' : null;
     light(false);
     patch({phase: 'row', profiles, user, tab, games, home, base, order: base, pins: allPinned(pinned), pinned, focus: 0,
       dir: 1, lifted: false, layer, target: null, pending: layer ? null : {index: 0}});
@@ -452,14 +453,14 @@ function App() {
       toast(T.alreadySaved);
       return;
     }
-    if (homeFull(now.order, now.pins)) {
+    if (homeFull(now.order, now.pins, now.tab)) {
       close();
       toast(T.pins.keepFree);
       return;
     }
     light(false);
     patch({lifted: false, layer: 'busy'});
-    const result = await api.save(now.user, now.order, now.games, now.pins);
+    const result = await api.save(now.user, now.tab, now.order, now.games, now.pins);
     if (result.ok) {
       if (next) {
         toast(T.savedToast);
@@ -487,10 +488,6 @@ function App() {
     return {order, focus: index, dir: index < p.focus ? -1 : 1};
   }), []);
   const onPressIndex = useCallback(index => {
-    if (ref.current.tab === 'media') {
-      toast(T.tabs.readOnly);
-      return;
-    }
     const lifting = !ref.current.lifted;
     if (lifting) Controller.vibrate(0.35, 45);
     light(lifting);
@@ -512,7 +509,7 @@ function App() {
     else exit();
     return true;
   };
-  // Unsaved changes stay on the Games tab: switching asks to save or discard them first.
+  // Unsaved changes stay on their tab: switching asks to save or discard them first.
   const switchTab = async tab => {
     const p = ref.current;
     if (tab === p.tab || p.lifted) return;
@@ -538,10 +535,6 @@ function App() {
       switchTab(action === 'l1' ? 'games' : 'media');
       return true;
     }
-    if (ref.current.tab === 'media' && (action === 'triangle' || action === 'square')) {
-      toast(T.tabs.readOnly);
-      return true;
-    }
     if (action === 'triangle') {
       save();
       return true;
@@ -550,7 +543,7 @@ function App() {
       const p = ref.current;
       const id = p.order[p.focus];
       const pins = p.pins[id] ? without(p.pins, id) : {...p.pins, [id]: true};
-      if (!p.pins[id] && homeFull(p.order, pins)) toast(T.pins.keepFree);
+      if (!p.pins[id] && homeFull(p.order, pins, p.tab)) toast(T.pins.keepFree);
       else patch({pins});
       return true;
     }
@@ -569,7 +562,7 @@ function App() {
   const reapply = () => {
     const now = ref.current;
     const order = pinnedOrder(now.order, now.pinned);
-    const pins = homeFull(order, now.pins) ? without(now.pins, order[0]) : now.pins;
+    const pins = homeFull(order, now.pins, now.tab) ? without(now.pins, order[0]) : now.pins;
     patch({order, pins});
     save(null, {...now, order, pins}, true);
   };
@@ -649,8 +642,7 @@ function App() {
 
   const count = changed(s);
   const pinHint = ['square', s.pins[s.order[s.focus]] ? H.unpin : H.pin];
-  const hints = s.layer ? PICK_HINTS : s.lifted ? LIFT_HINTS : s.tab === 'media' ? MEDIA_HINTS
-    : [ROW_HINTS[0], pinHint, ...ROW_HINTS.slice(1)];
+  const hints = s.layer ? PICK_HINTS : s.lifted ? LIFT_HINTS : [ROW_HINTS[0], pinHint, ...ROW_HINTS.slice(1)];
   const settings = s.settings ?? {checkOnOpen: true, skipped: ''};
   const file = s.update?.[s.install?.kind === 'image' ? 'exfat' : 'zip'];
   const notes = [s.update?.notes?.[LANGUAGE] ?? s.update?.notes?.en, file?.size ? T.update.size(file.size) : '']
@@ -681,16 +673,13 @@ function App() {
                 onPress={() => patch({layer: 'rollback'})} />
             ) : null,
           ] : s.layer === 'menu' ? [
-            // The Media tab is read only: no order to change there.
-            ...(s.tab === 'games' ? [
-              <SheetItem key="save" label={T.menu.save} onPress={() => save()}
-                detail={T.menu.changes(count)} />,
-              <SheetItem key="discard" label={T.menu.discard} onPress={discard} />,
-              <SheetItem key="sort" label={T.menu.sort} onPress={sortAZ} />,
-              <SheetItem key="pin-all" label={T.pins.pinAll} onPress={() => pinAll(true)} />,
-              <SheetItem key="unpin-all" label={T.pins.unpinAll} onPress={() => pinAll(false)} />,
-              <SheetRule key="rule" />,
-            ] : []),
+            <SheetItem key="save" label={T.menu.save} onPress={() => save()}
+              detail={T.menu.changes(count)} />,
+            <SheetItem key="discard" label={T.menu.discard} onPress={discard} />,
+            <SheetItem key="sort" label={T.menu.sort} onPress={sortAZ} />,
+            <SheetItem key="pin-all" label={T.pins.pinAll} onPress={() => pinAll(true)} />,
+            <SheetItem key="unpin-all" label={T.pins.unpinAll} onPress={() => pinAll(false)} />,
+            <SheetRule key="rule" />,
             <SheetItem key="profiles" label={T.menu.profiles} onPress={() => patch({layer: 'profiles'})}
               detail={s.profiles.length > 1 ? T.menu.profileCount(s.profiles.length) : ''} />,
             s.update ? (

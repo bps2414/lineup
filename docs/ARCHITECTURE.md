@@ -69,10 +69,10 @@ carry `X-Lineup: 1`, so a web page cannot trigger one with a plain form.
 | --- | --- |
 | `GET /version` | `{"version"}` |
 | `GET /profiles` | `{"profiles":[{"userId","hex","name","avatar"}]}`; `avatar` is the picture's mtime, or 0 |
-| `GET /row?user=<10 digits>[&tab=games\|media]` | `{"user","tab","pins","games":[{"titleId","name","index","icon","pinned"}]}`, in home order; the Media tab (`dispLocation = 188`) has no pins; `pinned` is the slot or `null`, `pins` is `"on"`, `"missing"` (pins without their triggers) or `"off"` |
+| `GET /row?user=<10 digits>[&tab=games\|media]` | `{"user","tab","pins","games":[{"titleId","name","index","icon","pinned"}]}`, in home order; `games` is the Games tab (`dispLocation = 138`), `media` the Media tab (`188`); `pinned` is the slot or `null`, `pins` is `"on"`, `"missing"` (pins without their triggers) or `"off"` |
 | `GET /icon/<titleId>` | `image/png`, the icon the home screen draws |
 | `GET /avatar/<10 digits>` | `image/png`, `avatar.png` from `/system_data/priv/cache/profile/0x<id>/` (8 or 16 hex digits) |
-| `POST /row?user=<10 digits>` | body `LIN1\n` then `<titleId> <index>[ pin]\n` per game, in the new order, with the index as read; ` pin` pins the game at that place. `{"ok","backup","integrity"}` |
+| `POST /row?user=<10 digits>[&tab=games\|media]` | body `LIN1\n` then `<titleId> <index>[ pin]\n` per app, in the new order, with the index as read; ` pin` pins the app at that place. `{"ok","backup","integrity"}` |
 | `POST /pins/off?user=<10 digits>` | `{"ok","backup"}`: unpins that profile's games and drops its triggers |
 | `POST /pins/uninstall` | `{"ok","backup"}`: removes every pin, trigger and table Lineup added to `app.db` |
 | `POST /report` | `{"ok","path"}`: writes `/data/lineup/report.json` with `app.db`'s triggers and, per profile, the apps on the Games (138) and Media (188) tabs, plus `tbl_contentinfo`, only the columns that tell the two tabs apart |
@@ -95,21 +95,23 @@ The app shows its own localized title and adds the detail after it.
 The system moves a game to the front each time it opens. To keep a pinned game in its place, lineupd adds
 three triggers to the profile's `tbl_iconinfo_<user>` in `app.db`: `lineup_pin_u_<user>` (after an update that
 raises `lastAccessIndex`, which opening a game does twice), `lineup_pin_i_<user>` (install) and
-`lineup_pin_d_<user>` (uninstall), for games on the row only (`visible = 1` and `dispLocation = 138`): an app on
-the Media tab opens, installs and goes as if Lineup were not there. They run inside the system's own write and reorder the row before the home
-screen reads it again: pinned games keep their slots (packed at the end if the row gets shorter), and the others
+`lineup_pin_d_<user>` (uninstall), for the apps on the Games and Media tabs (`visible = 1` and `dispLocation` 138
+or 188). They run inside the system's own write and reorder the tab of the app that fired them, and only that
+tab, before the home screen reads it again. Each tab keeps its own pins: an app is on one tab, so its slot is a
+place on that tab. Within the tab, pinned games keep their slots (packed at the end if the row gets shorter), and the others
 fill the free places by how recently they were used. Like saving, the reorder only reuses indices the row
 already holds. The slots live in `lineup_pin`; `lineup_seq` and `lineup_tmp` are helper tables. The SQL avoids
 CTEs, window functions, UPSERT and `RETURNING`.
 
-Saving drops the profile's triggers, writes the order and the pins, and creates the triggers again when there
-are pins, all in one transaction. When the last pin of every profile is gone, the tables go too. Rebuilding the
+Saving a tab drops the profile's triggers, writes that tab's order and pins (the other tab's pins stay), and
+creates the triggers again while the profile has pins on either tab, all in one transaction. When the last pin of every profile is gone, the tables go too. Rebuilding the
 database can drop the triggers; `/row` then says `"missing"` and the app offers to pin the games again. The
-triggers of 1.4.2 and older ran for the Media tab too; lineupd replaces them with the current ones when it starts,
-after a backup.
+triggers of 1.4.3 and older kept pins on the Games tab only (1.4.2's moved it whatever app fired them); lineupd
+replaces them with the current ones when it starts, after a backup.
 
-One of the first `HOME_LIMIT` (12) places always stays unpinned: with all of them pinned, the last game opened,
-such as the jailbreak's entry, has no place on the home screen and ends up in the game library. The app keeps it
+One of the first `HOME_LIMIT` (12) places of the Games tab, and of the first `MEDIA_HOME_LIMIT` (11) of the
+Media tab, always stays unpinned: with all of them pinned, the last app opened, such as the jailbreak's entry, has
+no place on the home screen and ends up in the library. The app keeps it
 free (Pin the whole row leaves the first place) and offers to free the first place of a row pinned in full by
 1.4.1 or older; `save_order` refuses such a row with 400.
 

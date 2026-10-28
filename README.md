@@ -23,7 +23,8 @@ out on the TV. Its local service then writes the new order where the home screen
   pushes it out of its place; the rest of the row still follows the system's rule. Options can pin the
   whole row, unpin all, or remove pinned games from every profile. Works from 1.3.0 on.
 - **Sort A to Z**, discard changes, and a count of the games that changed.
-- **Media tab.** L1 and R1 switch between the Games and Media tabs. The Media tab is read only for now.
+- **Media tab.** L1 and R1 switch between the Games and Media tabs. Media apps move and pin like games, each tab
+  with its own pins.
 - **Applies on exit.** Saving closes the app, and the home screen comes back with the new order. No
   restart needed.
 - **Updates in the app.** Lineup checks for a new release when it opens and shows its notes (Options →

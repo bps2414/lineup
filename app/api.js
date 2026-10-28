@@ -96,8 +96,8 @@ async function read(path, what) {
 
 export const profiles = async () => (await read('/profiles', T.service.profiles)).profiles ?? [];
 /**
- * {games, pins} of `tab` ('games' or 'media'): each game's `pinned` is its slot or null; `pins` is 'on', 'missing'
- * (triggers lost) or 'off'. The Media tab is read only and has no pins.
+ * {games, pins} of `tab` ('games' or 'media'): each app's `pinned` is its slot or null; `pins` is 'on', 'missing'
+ * (triggers lost) or 'off'.
  */
 export async function row(user, tab = 'games') {
   const data = await read(`/row?user=${user}&tab=${tab}`, T.service.row);
@@ -107,15 +107,15 @@ export const iconUrl = game => `${BASE}/icon/${game.titleId}?m=${game.icon}`;
 export const avatarUrl = profile => `${BASE}/avatar/${profile.userId}?m=${profile.avatar}`;
 
 /**
- * Saves `order` (titleIds) for `user`, sending each game's index as it was read and pinning the games in `pins`
- * where they stand. Resolves to {ok: true} or {ok: false, stale, message}; `stale` means the row changed since it
- * was read.
+ * Saves `order` (titleIds) as `user`'s `tab`, sending each app's index as it was read and pinning the apps in
+ * `pins` where they stand. Resolves to {ok: true} or {ok: false, stale, message}; `stale` means the row changed
+ * since it was read.
  */
-export async function save(user, order, games, pins) {
+export async function save(user, tab, order, games, pins) {
   const body = `LIN1\n${order.map(id => `${id} ${games[id].index}${pins[id] ? ' pin' : ''}\n`).join('')}`;
   let reply;
   try {
-    reply = await call(`/row?user=${user}`, {method: 'POST', body});
+    reply = await call(`/row?user=${user}&tab=${tab}`, {method: 'POST', body});
   } catch {
     return {ok: false, stale: false, message: T.service.saveNoAnswer};
   }
