@@ -63,7 +63,7 @@ const en = {
     save: 'Save a report for a bug',
     title: 'Report saved',
     body: path => `Copy ${path} over FTP and attach it to your issue on GitHub. It lists the apps on the Games and `
-      + 'Media tabs and how the home screen stores them, with no account details.',
+      + 'Media tabs and how the home screen stores them. It has no names or passwords, only the number of each profile.',
     ok: 'OK',
     failed: detail => `Could not save the report (${detail}).`,
   },
@@ -181,7 +181,7 @@ const pt = {
     save: 'Salvar um relatório para um bug',
     title: 'Relatório salvo',
     body: path => `Copie ${path} por FTP e anexe na sua issue do GitHub. Ele lista os apps das abas Jogos e `
-      + 'Mídia e como a tela inicial guarda cada um, sem dados da conta.',
+      + 'Mídia e como a tela inicial guarda cada um. Não tem nomes nem senhas, só o número de cada perfil.',
     ok: 'OK',
     failed: detail => `Não consegui salvar o relatório (${detail}).`,
   },
