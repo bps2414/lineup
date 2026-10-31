@@ -2,6 +2,18 @@
 
 As notas que o app mostra ao atualizar. Cada versão aqui acompanha a mesma seção do `CHANGELOG.md`.
 
+## 1.6.0
+
+- Opções, Esconder ou mover apps. A lista age sobre o app em foco na fileira, então escolha ele antes.
+- Mover para Mídia e Mover para Jogos: homebrew e emuladores mudam de aba em todos os perfis, com tudo o que o
+  console guarda sobre a aba mudando junto, não só o número dela. Jogos, títulos de PS4 e apps do sistema não mudam
+  de aba, e o app movido perde o lugar fixo. Ainda não foi testado depois de reiniciar o console: se um app voltar
+  para a aba antiga, avise.
+- Esconder: o app sai da aba e da biblioteca no perfil atual, e volta pela mesma página. A PS Store tem uma opção
+  própria ali. Remover apps fixos de todos os perfis também traz de volta o que estava escondido.
+- Toda mudança faz antes um backup do banco da tela inicial em `/data/lineup/backups`. Mover guarda também o
+  `appinfo.db`.
+
 ## 1.5.0
 
 A 1.4.3 não saiu; as mudanças dela vêm aqui.
