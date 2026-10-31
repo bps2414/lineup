@@ -2,7 +2,7 @@
 // Lineup's interface pieces: the mark, profile pictures, controller glyphs, button hints, the lift light, the pin
 // badge, the side sheet, dialogs, buttons, full-screen messages and the toast. Black and white only.
 import {useEffect} from 'react';
-import {Animated, Circle, Easing, FocusScope, Image, Path, Rect, Svg, Text, View, motion, transitions,
+import {Animated, Circle, Easing, FocusScope, Image, Path, Rect, ScrollView, Svg, Text, View, motion, transitions,
   useAnimatedValue, useIsFocused} from '@ps5-react/core';
 import {avatarUrl} from './api.js';
 
@@ -159,18 +159,26 @@ export function Avatar({profile, size}) {
 export function SheetItem({label, detail, leading, checked = false, autoFocus = false, onPress}) {
   return (
     <View onPress={onPress} autoFocus={autoFocus}
-      className="flex-row items-center gap-4 h-[56px] px-5 rounded-[10px] focused:bg-fg">
+      className="flex-row items-center gap-4 h-[48px] px-5 rounded-[10px] focused:bg-fg">
       {leading}
       <ItemBody label={label} detail={detail} checked={checked} />
     </View>
   );
 }
 
-export const SheetRule = () => <View className="h-[2px] mx-5 my-2 bg-line" />;
+export const SheetRule = () => <View className="h-[2px] mx-5 my-1.5 bg-line" />;
+
+/** A heading over a group of rows, as the app they act on. */
+export const SheetLabel = ({children}) => (
+  <Text className="px-5 pb-1 font-inter text-small text-muted truncate">{children}</Text>
+);
+
+/** A line of explanation among the rows. */
+export const SheetNote = ({children}) => <Text className="px-5 py-2 font-inter text-small text-subtle">{children}</Text>;
 
 /**
- * Right side sheet. Traps focus; Circle and Options close it. `page` remounts the list (and its focus).
- * `leading` goes left of the subtitle.
+ * Right side sheet. Traps focus; Circle and Options close it. `page` remounts the list (and its focus). The list
+ * scrolls with the focus, so a long page never leaves the screen. `leading` goes left of the subtitle.
  */
 export function Sheet({title, subtitle, leading, page, onClose, onBack = onClose, children}) {
   const back = () => {
@@ -185,8 +193,8 @@ export function Sheet({title, subtitle, leading, page, onClose, onBack = onClose
     <FocusScope trap autoFocus onBack={back} onAction={action}>
       <View className="absolute inset-0">
         <View className="absolute inset-0 bg-black/70" />
-        <motion.View className="absolute right-0 top-0 bottom-0 w-[440px] bg-surface border-l-2 border-line
-          px-5 pt-14 pb-24 gap-8" initial={{x: 440}} animate={{x: 0}} transition={slide}>
+        <motion.View className="absolute right-0 top-0 bottom-0 w-[480px] bg-surface border-l-2 border-line
+          px-5 pt-10 pb-20 gap-5" initial={{x: 480}} animate={{x: 0}} transition={slide}>
           <View className="px-5 gap-1.5">
             <Text className="font-inter text-sheet text-fg">{title}</Text>
             {subtitle ? (
@@ -196,9 +204,11 @@ export function Sheet({title, subtitle, leading, page, onClose, onBack = onClose
               </View>
             ) : null}
           </View>
-          <FocusScope key={page} autoFocus>
-            <View className="gap-1">{children}</View>
-          </FocusScope>
+          <ScrollView className="flex-1">
+            <FocusScope key={page} autoFocus>
+              <View className="gap-0.5">{children}</View>
+            </FocusScope>
+          </ScrollView>
         </motion.View>
       </View>
     </FocusScope>

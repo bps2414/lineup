@@ -2,6 +2,23 @@
 
 As notas que o app mostra ao atualizar. Cada versão aqui acompanha a mesma seção do `CHANGELOG.md`.
 
+## 1.7.0
+
+- O que você escondeu continua escondido depois de reiniciar o console. Antes a PS Store voltava sozinha, e se ela
+  voltou na 1.6.0, abrir o Lineup esconde ela de novo. Um app escondido que for removido e instalado de novo também
+  volta escondido.
+- Opções não passa mais da tela. Ficou mais curto, as páginas rolam e o último item sempre dá para alcançar.
+- Opções agora abre no app em foco: Mover e Esconder ficam logo no topo. Mover só aparece para apps que podem mudar
+  de aba.
+- Apps escondidos tem página própria, com a opção da PS Store e tudo o que dá para trazer de volta. Ela continua
+  aberta depois de cada um.
+- Ordenar e fixar toda a fileira foram para Organizar a fileira. Atualizações, o relatório de bug e remover os fixos
+  foram para Mais opções.
+- Depois de uma mudança, o foco fica onde estava e a mensagem diz o nome do app.
+- Trazer um app de volta ou mexer na PS Store descartava mudanças não salvas na ordem. Agora pede para salvar ou
+  descartar antes.
+- Mover de aba foi testado depois de reiniciar, e o app fica na aba nova.
+
 ## 1.6.0
 
 - Opções, Esconder ou mover apps. A lista age sobre o app em foco na fileira, então escolha ele antes.

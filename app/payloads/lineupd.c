@@ -65,7 +65,7 @@
 #define LOG(fmt, ...) klog_printf("[lineupd] " fmt "\n", ##__VA_ARGS__)
 #endif
 
-#define LINEUPD_VERSION "1.6.0"
+#define LINEUPD_VERSION "1.7.0"
 #define TITLE_ID "PPSA99077"
 #ifdef LINEUPD_DIAG
 // Phase 0 diagnostic build (docs/pt-BR/PLANO-1.2.md): its own port, open to the LAN, so it runs beside the
@@ -248,6 +248,23 @@ static int read_tab(sqlite3* db, const char* user, int location, Row* rows, char
   }
   sqlite3_finalize(statement);
   return count;
+}
+
+// Only homebrew and emulators installed under /user/app change tabs: the system's apps, games and PS4 titles stay out.
+static int can_move(const char* title, int type, int place) {
+  return (type == 0 || type == 5) && place == 2 && strncmp(title, "CUSA", 4) && strcmp(title, TITLE_ID);
+}
+
+// Whether the row should offer moving `title`. move_app checks again, with the rest of what it needs.
+static int is_movable(sqlite3* db, const char* title) {
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT appType, contentLocation FROM tbl_contentinfo WHERE titleId = ?", -1, &statement,
+                         NULL) != SQLITE_OK) return 0;
+  sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
+  int movable = sqlite3_step(statement) == SQLITE_ROW &&
+                can_move(title, sqlite3_column_int(statement, 0), sqlite3_column_int(statement, 1));
+  sqlite3_finalize(statement);
+  return movable;
 }
 
 // The icon the home screen draws: tbl_contentinfo.icon0Info (/user/app/<id>/sce_sys/icon0.png?ts=...),
@@ -511,8 +528,52 @@ static const char* read_pins(sqlite3* db, const char* user, const Row* rows, int
 //
 // visible = 0 takes an app off the home screen, on that profile only. lineup_hidden lists what Lineup hid, so
 // showing can only bring back those and never the system's own hidden entries. It goes with its last row.
+//
+// The console puts visible back to 1 on a restart, so a profile with hidden apps has two triggers that hide them
+// again, whether the system updates the row or writes it anew. They read lineup_hidden: a write to the profile's
+// table fails if the table goes before them.
 
 #define STORE_TITLE "NPXS40047"
+#define HIDE_TRIGGER(kind, event) \
+  "CREATE TRIGGER IF NOT EXISTS lineup_hide_" kind "_%1$s AFTER " event " ON tbl_iconinfo_%1$s WHEN NEW.visible = 1 AND " \
+  "NEW.titleId IN (SELECT titleId FROM lineup_hidden WHERE user = '%1$s') BEGIN UPDATE tbl_iconinfo_%1$s SET visible = 0 " \
+  "WHERE titleId = NEW.titleId; END;"
+#define HIDE_TRIGGERS HIDE_TRIGGER("u", "UPDATE OF visible") HIDE_TRIGGER("i", "INSERT")
+
+static int create_hide_triggers(sqlite3* db, const char* user) {
+  char sql[1024];
+  return snprintf(sql, sizeof sql, HIDE_TRIGGERS, user) >= (int)sizeof sql ||
+         sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK ? -1 : 0;
+}
+
+static int drop_hide_triggers(sqlite3* db, const char* user) {
+  char sql[128];
+  snprintf(sql, sizeof sql, "DROP TRIGGER IF EXISTS lineup_hide_u_%1$s; DROP TRIGGER IF EXISTS lineup_hide_i_%1$s;", user);
+  return sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+// The profiles with hidden apps, or -1.
+static int hidden_users(sqlite3* db, char users[][16]) {
+  int count = 0;
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT DISTINCT user FROM lineup_hidden", -1, &statement, NULL) != SQLITE_OK) return -1;
+  while (count < MAX_GAMES && sqlite3_step(statement) == SQLITE_ROW) {
+    const char* user = (const char*)sqlite3_column_text(statement, 0);
+    if (user && is_user_id(user)) snprintf(users[count++], sizeof users[0], "%s", user);
+  }
+  sqlite3_finalize(statement);
+  return count;
+}
+
+// Whether `sql`, with ?1 the user when it has one, finds a row: 1, 0, or -1 on failure.
+static int finds_row(sqlite3* db, const char* sql, const char* user) {
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) return -1;
+  if (sqlite3_bind_parameter_count(statement)) sqlite3_bind_text(statement, 1, user, -1, SQLITE_STATIC);
+  int step = sqlite3_step(statement);
+  sqlite3_finalize(statement);
+  return step == SQLITE_ROW ? 1 : step == SQLITE_DONE ? 0 : -1;
+}
 
 // Runs `sql` with ?1 the title and ?2 the user, when it has a ?2. Returns the rows changed, or -1.
 static int run_title(sqlite3* db, const char* sql, const char* user, const char* title) {
@@ -558,21 +619,16 @@ static int set_hidden(const char* user, const char* title, int hide, char* backu
       failed = changed < 0 || (changed && (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS lineup_hidden (user TEXT, titleId "
                "TEXT, PRIMARY KEY (user, titleId))", NULL, NULL, NULL) != SQLITE_OK ||
                run_title(db, "INSERT OR IGNORE INTO lineup_hidden VALUES (?2, ?1)", user, title) < 0 ||
-               forget_pin(db, user, title)));
+               create_hide_triggers(db, user) || forget_pin(db, user, title)));
     } else {
-      snprintf(sql, sizeof sql, "UPDATE tbl_iconinfo_%s SET visible = 1 WHERE titleId = ?1 AND visible = 0 AND titleId IN "
-               "(SELECT titleId FROM lineup_hidden WHERE user = ?2)", user);
-      changed = run_title(db, sql, user, title);
-      failed = changed < 0 || run_title(db, "DELETE FROM lineup_hidden WHERE titleId = ?1 AND user = ?2", user, title) < 0;
-      if (!failed) {
-        sqlite3_stmt* statement;
-        if (sqlite3_prepare_v2(db, "SELECT 1 FROM lineup_hidden LIMIT 1", -1, &statement, NULL) != SQLITE_OK) failed = 1;
-        else {
-          int empty = sqlite3_step(statement) != SQLITE_ROW;
-          sqlite3_finalize(statement);
-          failed = empty && sqlite3_exec(db, "DROP TABLE lineup_hidden", NULL, NULL, NULL) != SQLITE_OK;
-        }
-      }
+      // The row goes first: while it is there, the triggers hide the app again.
+      changed = run_title(db, "DELETE FROM lineup_hidden WHERE titleId = ?1 AND user = ?2", user, title);
+      snprintf(sql, sizeof sql, "UPDATE tbl_iconinfo_%s SET visible = 1 WHERE titleId = ?1 AND visible = 0", user);
+      failed = changed < 0 || (changed && run_title(db, sql, user, title) < 0);
+      int others = failed ? 0 : finds_row(db, "SELECT 1 FROM lineup_hidden WHERE user = ?1 LIMIT 1", user);
+      int any = failed ? 0 : finds_row(db, "SELECT 1 FROM lineup_hidden LIMIT 1", user);
+      failed = failed || others < 0 || any < 0 || (!others && drop_hide_triggers(db, user)) ||
+               (!any && sqlite3_exec(db, "DROP TABLE lineup_hidden", NULL, NULL, NULL) != SQLITE_OK);
     }
     if (failed) snprintf(message, message_size, "The write failed (%s). Nothing changed.", sqlite3_errmsg(db));
     else if (!changed) { snprintf(message, message_size, "That app changed since it was read. Open it again."); status = 409; failed = 1; }
@@ -592,21 +648,56 @@ done:
 static int show_all(sqlite3* db) {
   if (!has_object(db, "lineup_hidden")) return 0;
   static char users[MAX_GAMES][16];
-  int count = 0;
-  sqlite3_stmt* statement;
-  if (sqlite3_prepare_v2(db, "SELECT DISTINCT user FROM lineup_hidden", -1, &statement, NULL) != SQLITE_OK) return -1;
-  while (count < MAX_GAMES && sqlite3_step(statement) == SQLITE_ROW) {
-    const char* user = (const char*)sqlite3_column_text(statement, 0);
-    if (user && is_user_id(user)) snprintf(users[count++], sizeof users[0], "%s", user);
-  }
-  sqlite3_finalize(statement);
+  int count = hidden_users(db, users);
+  if (count < 0) return -1;
   for (int i = 0; i < count; ++i) {
     char sql[256];
     snprintf(sql, sizeof sql, "UPDATE tbl_iconinfo_%1$s SET visible = 1 WHERE visible = 0 AND titleId IN (SELECT titleId "
              "FROM lineup_hidden WHERE user = '%1$s')", users[i]);
-    if (table_exists(db, users[i]) && sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
+    if (drop_hide_triggers(db, users[i]) ||
+        (table_exists(db, users[i]) && sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK)) return -1;
   }
   return sqlite3_exec(db, "DROP TABLE lineup_hidden", NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+// Gives the profiles that hid apps on 1.6.0 their triggers, and hides again whatever came back, after a backup.
+// Returns how many profiles it changed, or -1.
+static int restore_hidden(void) {
+  sqlite3* db = open_db(1);
+  if (!db) return -1;
+  static char users[MAX_GAMES][16], stale[MAX_GAMES][16];
+  int count = has_object(db, "lineup_hidden") ? hidden_users(db, users) : 0, stale_count = 0, failed = count < 0;
+  for (int i = 0; !failed && i < count; ++i) {
+    char sql[256], name[64];
+    if (!table_exists(db, users[i])) continue;
+    snprintf(sql, sizeof sql, "SELECT 1 FROM tbl_iconinfo_%1$s WHERE visible = 1 AND titleId IN (SELECT titleId FROM "
+             "lineup_hidden WHERE user = '%1$s') LIMIT 1", users[i]);
+    int back = finds_row(db, sql, users[i]);
+    snprintf(name, sizeof name, "lineup_hide_u_%s", users[i]);
+    int missing = !has_object(db, name);
+    snprintf(name, sizeof name, "lineup_hide_i_%s", users[i]);
+    missing = missing || !has_object(db, name);
+    failed = back < 0;
+    if (back > 0 || missing) snprintf(stale[stale_count++], sizeof stale[0], "%s", users[i]);
+  }
+  if (!failed && stale_count) {
+    char backup[256] = "", message[300] = "";
+    failed = check_and_backup(db, backup, sizeof backup, message, sizeof message) ||
+             sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK;
+    for (int i = 0; !failed && i < stale_count; ++i) {
+      char sql[256];
+      snprintf(sql, sizeof sql, "UPDATE tbl_iconinfo_%1$s SET visible = 0 WHERE visible = 1 AND titleId IN (SELECT titleId "
+               "FROM lineup_hidden WHERE user = '%1$s')", stale[i]);
+      failed = sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK || create_hide_triggers(db, stale[i]);
+    }
+    if (failed || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+      LOG("hidden apps not restored: %s", *message ? message : sqlite3_errmsg(db));
+      sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+      failed = 1;
+    } else LOG("hidden apps restored for %d profiles, backup %s", stale_count, backup);
+  }
+  sqlite3_close(db);
+  return failed ? -1 : stale_count;
 }
 
 // Unpins every game of `user` (/pins/off), or of every profile when `user` is NULL (/pins/uninstall), after a
@@ -742,9 +833,8 @@ done:
 // the category is the Media one, so the rest of it survives a move there and back. Both databases commit together.
 #define MEDIA_CATEGORY 65536
 
-// Moves `title` to tab `location` on every profile, after backing up both databases. Only homebrew and emulators
-// installed under /user/app: the system's apps, games and PS4 titles stay out. Returns the HTTP status; `message`
-// explains a failure.
+// Moves `title` to tab `location` on every profile, after backing up both databases. Returns the HTTP status;
+// `message` explains a failure.
 static int move_app(const char* title, int location, char* backup, size_t backup_size, char* message, size_t message_size) {
   if (!strcmp(title, TITLE_ID)) { snprintf(message, message_size, "Lineup stays on the Games tab."); return 400; }
   sqlite3* db = open_db(1);
@@ -770,7 +860,7 @@ static int move_app(const char* title, int location, char* backup, size_t backup
       status = 409;
       goto done;
     }
-    if ((type != 0 && type != 5) || place != 2 || !strncmp(title, "CUSA", 4)) {
+    if (!can_move(title, type, place)) {
       snprintf(message, message_size, "Only homebrew and emulators can move between tabs.");
       status = 400;
       goto done;
@@ -1232,12 +1322,13 @@ static void get_row(int socket, const char* user, int media) {
   if (!table_exists(db, user)) { sqlite3_close(db); respond_error(socket, 404, "No such profile."); return; }
   int count = read_tab(db, user, media ? MEDIA_TAB : GAMES_TAB, rows, names, MAX_GAMES);
   static long long icons[MAX_GAMES];
-  static int slots[MAX_GAMES];
+  static int slots[MAX_GAMES], movable[MAX_GAMES];
   for (int i = 0; i < count; ++i) {
     char path[256];
     struct stat info;
     icon_path(db, rows[i].title, path, sizeof path);
     icons[i] = stat(path, &info) ? 0 : (long long)info.st_mtime;
+    movable[i] = is_movable(db, rows[i].title);
   }
   const char* pins = read_pins(db, user, rows, count < 0 ? 0 : count, slots);
   sqlite3_close(db);
@@ -1251,7 +1342,7 @@ static void get_row(int socket, const char* user, int media) {
     put_json_string(&body, rows[i].title);
     puts_(&body, ",\"name\":");
     put_json_string(&body, names[i]);
-    putf(&body, ",\"index\":%lld,\"icon\":%lld", rows[i].index, icons[i]);
+    putf(&body, ",\"index\":%lld,\"icon\":%lld,\"movable\":%s", rows[i].index, icons[i], movable[i] ? "true" : "false");
     if (slots[i] < 0) puts_(&body, ",\"pinned\":null}");
     else putf(&body, ",\"pinned\":%d}", slots[i]);
   }
@@ -2108,6 +2199,7 @@ int main(void) {
     if (!quit && !triggers_checked) {
       triggers_checked = 1;
       update_pin_triggers();
+      restore_hidden();
     }
     // After the answer is out: the app closes once it has it.
     if (update.pending && run_update()) {
@@ -2213,6 +2305,13 @@ static int has_object_named(const char* name) {
   int exists = has_object(db, name);
   sqlite3_close(db);
   return exists;
+}
+
+static int show_all_of_test(void) {
+  sqlite3* db = open_db(1);
+  int result = show_all(db);
+  sqlite3_close(db);
+  return result;
 }
 
 // Pinned games on the synthetic database: games 1 to 5 of user 1, in that order.
@@ -2360,10 +2459,36 @@ static void test_pins(void) {
   assert(set_hidden(one, "NPXS40037", 0, backup, sizeof backup, message, sizeof message) == 409);
   assert(set_hidden(one, STORE_TITLE, 1, backup, sizeof backup, message, sizeof message) == 200);
   assert(scalar("SELECT COUNT(*) FROM lineup_hidden") == 2);
+  // The console brings a hidden app back with an update or a new row; the triggers take it away, and only it.
+  const char* store_visible = "SELECT visible FROM tbl_iconinfo_0000000001 WHERE titleId = '" STORE_TITLE "'";
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 1 WHERE titleId = '%2$s'", one, STORE_TITLE);
+  assert(!scalar(store_visible));
+  run("DELETE FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", one, STORE_TITLE);
+  run("INSERT INTO tbl_iconinfo_%1$s (titleId, titleName, lastAccessIndex, visible, dispLocation) VALUES ('%2$s','Store',1,1,146)", one, STORE_TITLE);
+  assert(!scalar(store_visible));
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 1 WHERE titleId = '%2$s'", one, "NPXS40037");
+  assert(scalar("SELECT visible FROM tbl_iconinfo_0000000001 WHERE titleId = 'NPXS40037'") == 1);
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 0 WHERE titleId = '%2$s'", one, "NPXS40037");
+  // As left by 1.6.0: no triggers and the Store back. Opening Lineup hides it again, once.
+  run("DROP TRIGGER lineup_hide_u_%1$s; DROP TRIGGER lineup_hide_i_%1$s; UPDATE tbl_iconinfo_%1$s SET visible = 1 "
+      "WHERE titleId = '%2$s'", one, STORE_TITLE);
+  assert(scalar(store_visible) == 1);
+  assert(restore_hidden() == 1 && restore_hidden() == 0);
+  assert(!scalar(store_visible) && has_object_named("lineup_hide_u_0000000001") && has_object_named("lineup_hide_i_0000000001"));
   assert(set_hidden(one, "PPSA00005", 0, backup, sizeof backup, message, sizeof message) == 200);
   expect_row(one, "235");
+  assert(has_object_named("lineup_hide_u_0000000001"));
   assert(set_hidden(one, STORE_TITLE, 0, backup, sizeof backup, message, sizeof message) == 200);
-  assert(!has_object_named("lineup_hidden"));
+  assert(scalar(store_visible) == 1);
+  assert(!has_object_named("lineup_hidden") && !has_object_named("lineup_hide_u_0000000001") &&
+         !has_object_named("lineup_hide_i_0000000001"));
+  // A shown app stays shown.
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 1 WHERE titleId = '%2$s'", one, STORE_TITLE);
+  assert(scalar(store_visible) == 1);
+  // Removing Lineup takes the triggers before their table.
+  assert(set_hidden(one, STORE_TITLE, 1, backup, sizeof backup, message, sizeof message) == 200);
+  assert(!show_all_of_test() && !has_object_named("lineup_hide_u_0000000001") && !has_object_named("lineup_hidden"));
+  assert(scalar(store_visible) == 1);
   run("DELETE FROM tbl_iconinfo_%1$s WHERE titleId LIKE 'NPXS%%'", one, "");
   // Moving: every place agrees, the rest of the category survives, the pin goes, and both databases roll back together.
   {
@@ -2382,6 +2507,12 @@ static void test_pins(void) {
         "('PPSA00003',138,0,5,0,'pshome:gamehub?titleId=PPSA00003',2,'{}'),('PPSA00005',138,0,1,0,'g',2,'{}'),"
         "('PPSA00018',188,65536,5,1,'m',0,'{}')", one, "");
     save_digits(one, "235", "2");
+    {
+      sqlite3* db = open_db(0);
+      assert(is_movable(db, "PPSA00002") && !is_movable(db, "PPSA00005") && !is_movable(db, "PPSA00018") &&
+             !is_movable(db, TITLE_ID) && !is_movable(db, "PPSA09999"));
+      sqlite3_close(db);
+    }
     assert(move_app(TITLE_ID, MEDIA_TAB, backup, sizeof backup, message, sizeof message) == 400);
     assert(move_app("PPSA00005", MEDIA_TAB, backup, sizeof backup, message, sizeof message) == 400);
     assert(move_app("PPSA00018", GAMES_TAB, backup, sizeof backup, message, sizeof message) == 400);

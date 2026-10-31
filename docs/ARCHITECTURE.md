@@ -69,14 +69,14 @@ carry `X-Lineup: 1`, so a web page cannot trigger one with a plain form.
 | --- | --- |
 | `GET /version` | `{"version"}` |
 | `GET /profiles` | `{"profiles":[{"userId","hex","name","avatar"}]}`; `avatar` is the picture's mtime, or 0 |
-| `GET /row?user=<10 digits>[&tab=games\|media]` | `{"user","tab","pins","games":[{"titleId","name","index","icon","pinned"}]}`, in home order; `games` is the Games tab (`dispLocation = 138`), `media` the Media tab (`188`); `pinned` is the slot or `null`, `pins` is `"on"`, `"missing"` (pins without their triggers) or `"off"` |
+| `GET /row?user=<10 digits>[&tab=games\|media]` | `{"user","tab","pins","games":[{"titleId","name","index","icon","movable","pinned"}]}`, in home order; `games` is the Games tab (`dispLocation = 138`), `media` the Media tab (`188`); `movable` says whether the app can change tabs, `pinned` is the slot or `null`, `pins` is `"on"`, `"missing"` (pins without their triggers) or `"off"` |
 | `GET /icon/<titleId>` | `image/png`, the icon the home screen draws |
 | `GET /avatar/<10 digits>` | `image/png`, `avatar.png` from `/system_data/priv/cache/profile/0x<id>/` (8 or 16 hex digits) |
 | `POST /row?user=<10 digits>[&tab=games\|media]` | body `LIN1\n` then `<titleId> <index>[ pin]\n` per app, in the new order, with the index as read; ` pin` pins the app at that place. `{"ok","backup","integrity"}` |
 | `POST /pins/off?user=<10 digits>` | `{"ok","backup"}`: unpins that profile's games and drops its triggers |
 | `POST /pins/uninstall` | `{"ok","backup"}`: removes every pin, trigger and table Lineup added to `app.db`, and brings back what it hid |
 | `GET /hidden?user=<10 digits>` | `{"hidden":[{"titleId","name"}]}`: what Lineup hid on that profile (`lineup_hidden`) |
-| `POST /app?user=<10 digits>&title=<id>&action=hide\|show\|games\|media` | `{"ok","backup"}`: `hide` and `show` set `visible` on that profile. `games` and `media` move homebrew or an emulator on every profile: `tbl_iconinfo_<user>`, `tbl_contentinfo` with its `AppInfoJson`, and `appinfo.db`, in one transaction |
+| `POST /app?user=<10 digits>&title=<id>&action=hide\|show\|games\|media` | `{"ok","backup"}`: `hide` and `show` set `visible` on that profile, and `lineup_hide_[ui]_<user>` triggers keep it at 0, since the console sets it back to 1 on a restart. `games` and `media` move homebrew or an emulator on every profile: `tbl_iconinfo_<user>`, `tbl_contentinfo` with its `AppInfoJson`, and `appinfo.db`, in one transaction |
 | `POST /report` | `{"ok","path"}`: writes `/data/lineup/report.json` with `app.db`'s triggers and, per profile, the apps on the Games (138) and Media (188) tabs, plus `tbl_contentinfo`, only the columns that tell the two tabs apart |
 | `POST /quit` | `{"ok":true}`, then exits |
 | `GET /update/install` | `{"kind":"folder"\|"image","path","previous"}`: the one `PPSA99077` folder or `Lineup-*.exfat` image, and the version kept in `/data/lineup/update/previous/` |

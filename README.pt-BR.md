@@ -26,9 +26,9 @@ ordem na TV. Depois, o serviço local dele grava a nova ordem onde a tela inicia
 - **Ordenar de A a Z**, descartar mudanças e contagem de jogos que mudaram.
 - **Aba Mídia.** L1 e R1 trocam entre as abas Jogos e Mídia. Os apps da Mídia se movem e fixam como os jogos,
   cada aba com os seus fixos.
-- **Esconder ou mover apps.** Deixe o foco no app e vá em Opções → Esconder ou mover apps. Homebrew e emuladores
-  mudam entre Jogos e Mídia em todos os perfis. Qualquer app dessas abas, e a PS Store, pode ser escondido no perfil
-  atual e trazido de volta na mesma página.
+- **Esconder ou mover apps.** Deixe o foco no app e aperte Opções: Mover e Esconder ficam no topo. Homebrew e
+  emuladores mudam entre Jogos e Mídia em todos os perfis. Qualquer app dessas abas, e a PS Store, pode ser escondido
+  no perfil atual, continua escondido depois de reiniciar e volta em Opções → Apps escondidos.
 - **Aplica ao sair.** Salvar fecha o app, e a tela inicial volta com a nova ordem. Não precisa
   reiniciar.
 - **Atualização no app.** O Lineup procura uma versão nova ao abrir e mostra as novidades (Opções →
