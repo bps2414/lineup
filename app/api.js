@@ -3,7 +3,7 @@
 import {Archives, Downloads, FileSystem, Http, Payloads} from '@ps5-react/core';
 import {T} from './i18n.js';
 
-export const VERSION = '1.5.0';
+export const VERSION = '1.6.0';
 const BASE = 'http://127.0.0.1:9077';
 
 /** An error the app shows as is: a short title and what to do about it. */
@@ -132,6 +132,19 @@ export async function unpinAll() {
     return reply.ok ? '' : T.pins.removeFailed(reply.data.error ?? T.service.status(reply.status));
   } catch {
     return T.pins.removeFailed(T.pins.noAnswer);
+  }
+}
+
+/** What Lineup hid on `user`, as [{titleId, name}]. */
+export const hidden = async user => (await read(`/hidden?user=${user}`, T.service.hidden)).hidden ?? [];
+
+/** Hides, shows or moves an app: `action` is 'hide', 'show', 'games' or 'media'. Resolves to an error message or ''. */
+export async function changeApp(user, title, action) {
+  try {
+    const reply = await call(`/app?user=${user}&title=${title}&action=${action}`, {method: 'POST', timeoutMs: 15000});
+    return reply.ok ? '' : T.apps.failed(reply.data.error ?? T.service.status(reply.status));
+  } catch {
+    return T.apps.failed(T.pins.noAnswer);
   }
 }
 

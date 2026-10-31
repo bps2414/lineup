@@ -271,6 +271,8 @@ const ROW_HINTS = [['cross', H.lift], ['triangle', H.save], ['options', H.option
 const LIFT_HINTS = [['dpad', H.move], ['cross', H.drop], ['circle', H.cancel]];
 const PICK_HINTS = [['cross', H.choose], ['circle', H.back]];
 
+const STORE = 'NPXS40047';
+
 const START = {phase: 'loading', step: T.service.looking, error: null, profiles: [], user: null, tab: 'games',
   games: {}, home: {}, base: [], order: [], pins: {}, pinned: {}, focus: 0, dir: 1, lifted: false, liftFrom: 0, layer: null,
   target: null, toast: null, pending: null, progress: null, settings: null, update: null, install: null};
@@ -582,6 +584,36 @@ function App() {
       toast(error);
     }
   };
+  const openApps = async () => {
+    const {user} = ref.current;
+    patch({layer: 'busy'});
+    try {
+      patch({hidden: await api.hidden(user), layer: 'apps'});
+    } catch (error) {
+      close();
+      toast(error.detail ?? error.message);
+    }
+  };
+  // Applied at once, so the tab reloads from what is really saved. With its last app gone, Games takes over.
+  const changeApp = async (title, action) => {
+    const p = ref.current;
+    patch({layer: 'busy'});
+    const error = await api.changeApp(p.user, title, action);
+    try {
+      await loadRow(p.user, p.profiles).catch(() => loadRow(p.user, p.profiles, 'games'));
+    } catch (problem) {
+      patch({phase: 'error', error: problem});
+      return;
+    }
+    toast(error || T.apps.done);
+  };
+  const appPage = layer => patch(p => {
+    if (changed(p)) {
+      toast(T.tabs.saveFirst);
+      return {};
+    }
+    return {layer};
+  });
   const sortAZ = () => patch(p => {
     const id = p.order[p.focus];
     const order = p.order.slice().sort((a, b) => {
@@ -599,6 +631,8 @@ function App() {
   };
 
   const profile = s.profiles.find(item => item.userId === s.user);
+  const focused = s.games[s.order[s.focus]];
+  const storeHidden = (s.hidden ?? []).some(app => app.titleId === STORE);
 
   if (s.phase === 'loading') {
     return (
@@ -657,14 +691,28 @@ function App() {
       <Row s={s} />
       <Rail s={s} />
       <Position s={s} />
-      {s.layer === 'menu' || s.layer === 'profiles' || s.layer === 'updates' ? (
+      {s.layer === 'menu' || s.layer === 'profiles' || s.layer === 'updates' || s.layer === 'apps' ? (
         // One sheet for every page, so it stays put and still knows which game to give focus back to.
         <Sheet page={s.layer} onClose={close}
           onBack={() => (s.layer === 'menu' ? close() : patch({layer: 'menu'}))}
-          title={s.layer === 'menu' ? T.menu.title : s.layer === 'profiles' ? T.profilesTitle : T.updates.title}
-          subtitle={s.layer === 'menu' ? profile?.name : s.layer === 'profiles' ? T.profilesSubtitle : `Lineup ${api.VERSION}`}
+          title={s.layer === 'menu' ? T.menu.title : s.layer === 'profiles' ? T.profilesTitle
+            : s.layer === 'apps' ? T.apps.title : T.updates.title}
+          subtitle={s.layer === 'menu' ? profile?.name : s.layer === 'profiles' ? T.profilesSubtitle
+            : s.layer === 'apps' ? T.apps.subtitle : `Lineup ${api.VERSION}`}
           leading={s.layer === 'menu' && profile ? <Avatar profile={profile} size={24} /> : null}>
-          {s.layer === 'updates' ? [
+          {s.layer === 'apps' ? [
+            <SheetItem key="move" label={s.tab === 'games' ? T.apps.toMedia : T.apps.toGames} detail={focused?.name}
+              onPress={() => appPage('moveApp')} />,
+            <SheetItem key="hide" label={T.apps.hide} detail={focused?.name} onPress={() => appPage('hideApp')} />,
+            <SheetItem key="store" label={T.apps.store} checked={storeHidden}
+              onPress={() => changeApp(STORE, storeHidden ? 'show' : 'hide')} />,
+            <SheetRule key="rule" />,
+            // ponytail: past these, one comes back and the next shows up; the sheet does not scroll.
+            ...(s.hidden ?? []).filter(app => app.titleId !== STORE).slice(0, 8).map(app => (
+              <SheetItem key={app.titleId} label={app.name} detail={T.apps.show}
+                onPress={() => changeApp(app.titleId, 'show')} />
+            )),
+          ] : s.layer === 'updates' ? [
             <SheetItem key="open" label={T.updates.checkOnOpen} checked={settings.checkOnOpen}
               onPress={() => keepSettings({...settings, checkOnOpen: !settings.checkOnOpen})} />,
             <SheetItem key="now" label={T.updates.checkNow} onPress={checkNow} />,
@@ -685,6 +733,7 @@ function App() {
             s.update ? (
               <SheetItem key="update" label={T.menu.updateTo(s.update.version)} onPress={() => patch({layer: 'update'})} />
             ) : null,
+            <SheetItem key="apps" label={T.apps.menu} onPress={openApps} />,
             <SheetItem key="updates" label={T.menu.updates} onPress={() => patch({layer: 'updates'})} />,
             <SheetItem key="remove-pins" label={T.pins.removeAll} onPress={() => patch({layer: 'removePins'})} />,
             <SheetItem key="report" label={T.report.save} onPress={saveReport} />,
@@ -727,6 +776,19 @@ function App() {
         <Dialog title={T.pins.removeTitle} body={T.pins.removeBody} onBack={() => patch({layer: 'menu'})}>
           <Button label={T.pins.removeConfirm} onPress={unpinEverywhere} />
           <Button label={T.pins.cancel} onPress={() => patch({layer: 'menu'})} />
+        </Dialog>
+      ) : null}
+      {s.layer === 'hideApp' ? (
+        <Dialog title={T.apps.hideTitle(focused?.name)} body={T.apps.hideBody} onBack={() => patch({layer: 'apps'})}>
+          <Button label={T.apps.confirmHide} onPress={() => changeApp(focused?.titleId, 'hide')} />
+          <Button label={T.apps.cancel} onPress={() => patch({layer: 'apps'})} />
+        </Dialog>
+      ) : null}
+      {s.layer === 'moveApp' ? (
+        <Dialog title={T.apps.moveTitle(focused?.name, s.tab === 'games' ? T.tabs.media : T.tabs.games)}
+          body={T.apps.moveBody} onBack={() => patch({layer: 'apps'})}>
+          <Button label={T.apps.confirmMove} onPress={() => changeApp(focused?.titleId, s.tab === 'games' ? 'media' : 'games')} />
+          <Button label={T.apps.cancel} onPress={() => patch({layer: 'apps'})} />
         </Dialog>
       ) : null}
       {s.layer === 'report' ? (

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.0
+
+- Options, Hide or move apps. The list acts on the app focused on the row, so pick it first.
+- Move to Media and Move to Games: homebrew and emulators change tabs on every profile, with everything the console
+  keeps about the tab changed together, not just the tab number. Games, PS4 titles and system apps can't move, and a
+  moved app loses its pin. Not tested across a console restart yet: if an app goes back to its old tab, report it.
+- Hide: an app leaves its tab and library on the current profile, and it comes back from the same page. The PS Store
+  has its own switch there. Remove pinned apps from every profile also brings back what was hidden.
+- Every change backs up the home screen database first, in `/data/lineup/backups`. Moving also backs up `appinfo.db`.
+
 ## 1.5.0
 
 1.4.3 was not released; its changes ship here.
