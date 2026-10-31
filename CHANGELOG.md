@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.7.0
+
+- What you hid stays hidden across a console restart. The PS Store used to come back on its own, and if it did on
+  1.6.0, opening Lineup hides it again. A hidden app that is removed and installed again also comes back hidden.
+- Options no longer runs off the screen. It is shorter, its pages scroll, and the last item is always reachable.
+- Options now opens on the focused app: Move and Hide are right at the top. Move shows only for apps that can
+  change tabs.
+- Hidden apps has its own page, with the PS Store switch and everything to bring back. It stays open after each one.
+- Sorting and pinning the whole row moved to Arrange the row. Updates, the bug report and removing pins moved to More
+  options.
+- After a change, focus stays where it was and the message names the app.
+- Bringing back an app or switching the PS Store used to drop unsaved changes to the order. It now asks you to save
+  or discard them first.
+- Moving between tabs is now tested across a restart, and the app stays on its new tab.
+
 ## 1.6.0
 
 - Options, Hide or move apps. The list acts on the app focused on the row, so pick it first.

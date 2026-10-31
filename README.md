@@ -25,9 +25,9 @@ out on the TV. Its local service then writes the new order where the home screen
 - **Sort A to Z**, discard changes, and a count of the games that changed.
 - **Media tab.** L1 and R1 switch between the Games and Media tabs. Media apps move and pin like games, each tab
   with its own pins.
-- **Hide or move apps.** Focus an app, then Options → Hide or move apps. Homebrew and emulators move between Games
-  and Media on every profile. Any app on those tabs, and the PS Store, can be hidden on the current profile and
-  brought back from the same page.
+- **Hide or move apps.** Focus an app and press Options: Move and Hide are at the top. Homebrew and emulators move
+  between Games and Media on every profile. Any app on those tabs, and the PS Store, can be hidden on the current
+  profile, stays hidden across restarts, and comes back from Options → Hidden apps.
 - **Applies on exit.** Saving closes the app, and the home screen comes back with the new order. No
   restart needed.
 - **Updates in the app.** Lineup checks for a new release when it opens and shows its notes (Options →
