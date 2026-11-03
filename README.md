@@ -16,7 +16,7 @@
 
 <p align="center">
   <a href="https://github.com/bps2414/lineup/releases/latest"><img src="https://img.shields.io/github/v/release/bps2414/lineup?label=release&color=24292f" alt="Latest release"></a>
-  <a href="https://github.com/bps2414/lineup/releases"><img src="https://img.shields.io/github/downloads/bps2414/lineup/total?color=24292f" alt="Downloads"></a>
+  <a href="https://github.com/bps2414/lineup/releases"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fbps2414%2Flineup%2Fbadges%2Fdownloads.json" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/tested_on-13.60-24292f" alt="Tested on firmware 13.60">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-24292f" alt="GPL-3.0 license"></a>
 </p>
