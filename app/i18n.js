@@ -93,6 +93,11 @@ const en = {
     ok: 'OK',
     failed: detail => `Could not save the report (${detail}).`,
   },
+  star: {
+    item: 'Star Lineup on GitHub', title: 'Liked Lineup?',
+    body: 'Scan the code with your phone and leave a star on GitHub. It helps other people find Lineup.',
+    done: 'Done',
+  },
   saved: ['Order saved', 'Closing the app. The home screen comes back with the new order.'],
   closeNow: 'Close now',
   retry: 'Try again',
@@ -237,6 +242,11 @@ const pt = {
       + 'Mídia e como a tela inicial guarda cada um. Não tem nomes nem senhas, só o número de cada perfil.',
     ok: 'OK',
     failed: detail => `Não consegui salvar o relatório (${detail}).`,
+  },
+  star: {
+    item: 'Dar uma estrela no GitHub', title: 'Gostou do Lineup?',
+    body: 'Aponte a câmera do celular para o código e deixe uma estrela no GitHub. Isso ajuda outras pessoas a acharem o Lineup.',
+    done: 'Pronto',
   },
   saved: ['Ordem salva', 'Fechando o app. A tela inicial já volta com a nova ordem.'],
   closeNow: 'Fechar agora',

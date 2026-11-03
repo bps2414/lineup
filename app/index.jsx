@@ -15,6 +15,7 @@ import {useInterfaceSounds} from './sounds.js';
 import * as api from './api.js';
 import {LANGUAGE, T} from './i18n.js';
 import {BOTTOM, DIGITS, EM, TOP} from './digits.js';
+import * as qr from './qr.js';
 import {Avatar, Badge, Button, C, Dialog, Hints, LiftLight, Mark, Message, PinBadge, Sheet, SheetItem, SheetLabel,
   SheetNote, SheetRule, Toast, Wash, px} from './ui.jsx';
 
@@ -275,7 +276,8 @@ const STORE = 'NPXS40047';
 
 // The side sheet's pages: title and subtitle. The menu and Updates work out their own subtitle.
 const SHEETS = {menu: [T.menu.title], profiles: [T.profilesTitle, T.profilesSubtitle], updates: [T.updates.title],
-  hidden: [T.apps.title, T.apps.subtitle], arrange: [T.menu.arrange, T.menu.arrangeSubtitle], more: [T.menu.more]};
+  hidden: [T.apps.title, T.apps.subtitle], arrange: [T.menu.arrange, T.menu.arrangeSubtitle], more: [T.menu.more],
+  star: [T.star.title, qr.URL.replace('https://', '')]};
 
 const START = {phase: 'loading', step: T.service.looking, error: null, profiles: [], user: null, tab: 'games',
   games: {}, home: {}, base: [], order: [], pins: {}, pinned: {}, focus: 0, dir: 1, lifted: false, liftFrom: 0, layer: null,
@@ -709,7 +711,8 @@ function App() {
       {SHEETS[s.layer] ? (
         // One sheet for every page, so it stays put and still knows which game to give focus back to.
         <Sheet page={s.layer} onClose={close}
-          onBack={() => (s.layer === 'menu' ? close() : patch({layer: s.layer === 'updates' ? 'more' : 'menu'}))}
+          onBack={() => (s.layer === 'menu' ? close()
+            : patch({layer: ['updates', 'star'].includes(s.layer) ? 'more' : 'menu'}))}
           title={SHEETS[s.layer][0]}
           subtitle={s.layer === 'menu' ? profile?.name : s.layer === 'updates' ? `Lineup ${api.VERSION}` : SHEETS[s.layer][1]}
           leading={s.layer === 'menu' && profile ? <Avatar profile={profile} size={24} /> : null}>
@@ -730,6 +733,16 @@ function App() {
             <SheetItem key="updates" label={T.menu.updates} onPress={() => patch({layer: 'updates'})} />,
             <SheetItem key="report" label={T.report.save} onPress={saveReport} />,
             <SheetItem key="remove-pins" label={T.pins.removeAll} onPress={() => patch({layer: 'removePins'})} />,
+            <SheetItem key="star" label={T.star.item} onPress={() => patch({layer: 'star'})} />,
+          ] : s.layer === 'star' ? [
+            // The repo's address as a code the phone's camera reads: the audience is at the TV, with no mouse.
+            <View key="code" className="mx-5 mb-2 p-8 self-start rounded-[10px] bg-fg">
+              <Svg width={px(220)} height={px(220)} viewBox={`0 0 ${qr.SIZE} ${qr.SIZE}`}>
+                <Path d={qr.PATH} fill={C.canvas} />
+              </Svg>
+            </View>,
+            <SheetNote key="body">{T.star.body}</SheetNote>,
+            <SheetItem key="done" label={T.star.done} onPress={() => patch({layer: 'more'})} />,
           ] : s.layer === 'updates' ? [
             <SheetItem key="open" label={T.updates.checkOnOpen} checked={settings.checkOnOpen}
               onPress={() => keepSettings({...settings, checkOnOpen: !settings.checkOnOpen})} />,
