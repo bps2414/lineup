@@ -1,0 +1,39 @@
+name: badges
+# The README's downloads badge counts only the app itself (.zip and .exfat). shields.io's own
+# downloads badge also counts update.json, which the app fetches every time it opens, so it
+# cannot be used. This writes the count where shields.io's endpoint badge reads it: the
+# `badges` branch, rebuilt as a single commit each run.
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: badges
+
+jobs:
+  downloads:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Count downloads of the app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          N="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[].assets[] | select(.name | test("\\.(zip|exfat)$")) | .download_count' \
+            | awk '{ n += $1 } END { print n + 0 }')"
+          echo "App downloads: $N"
+          mkdir out
+          printf '{"schemaVersion":1,"label":"downloads","message":"%s","color":"24292f"}\n' "$N" > out/downloads.json
+      - name: Publish to the badges branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd out
+          git init -q -b badges
+          git add downloads.json
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "Downloads of the app"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges
