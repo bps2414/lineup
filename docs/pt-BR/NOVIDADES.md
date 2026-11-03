@@ -2,6 +2,15 @@
 
 As notas que o app mostra ao atualizar. Cada versão aqui acompanha a mesma seção do `CHANGELOG.md`.
 
+## 1.8.0
+
+- Um app movido continua na aba nova quando é instalado de novo. O payload do Game Compressor instala o atalho de
+  novo toda vez que inicia, e isso jogava ele de volta para Jogos (#11).
+- O próprio Lineup agora pode ir para a aba Mídia (#12).
+- Apps escondidos tem um botão para a Galeria de mídia, igual ao da PS Store (#12).
+- O relatório de bug agora diz onde cada app está instalado.
+- Mais opções tem Dar uma estrela no GitHub: um QR code para abrir o repositório no celular.
+
 ## 1.7.0
 
 - O que você escondeu continua escondido depois de reiniciar o console. Antes a PS Store voltava sozinha, e se ela

@@ -65,7 +65,7 @@
 #define LOG(fmt, ...) klog_printf("[lineupd] " fmt "\n", ##__VA_ARGS__)
 #endif
 
-#define LINEUPD_VERSION "1.7.0"
+#define LINEUPD_VERSION "1.8.0"
 #define TITLE_ID "PPSA99077"
 #ifdef LINEUPD_DIAG
 // Phase 0 diagnostic build (docs/pt-BR/PLANO-1.2.md): its own port, open to the LAN, so it runs beside the
@@ -534,7 +534,9 @@ static const char* read_pins(sqlite3* db, const char* user, const Row* rows, int
 // again, whether the system updates the row or writes it anew. They read lineup_hidden: a write to the profile's
 // table fails if the table goes before them.
 
+// The PS Store and the Media Gallery have places of their own, off both tabs, and Lineup can hide them too.
 #define STORE_TITLE "NPXS40047"
+#define GALLERY_TITLE "NPXS40075"
 #define HIDE_TRIGGER(kind, event) \
   "CREATE TRIGGER IF NOT EXISTS lineup_hide_" kind "_%1$s AFTER " event " ON tbl_iconinfo_%1$s WHEN NEW.visible = 1 AND " \
   "NEW.titleId IN (SELECT titleId FROM lineup_hidden WHERE user = '%1$s') BEGIN UPDATE tbl_iconinfo_%1$s SET visible = 0 " \
@@ -615,7 +617,7 @@ static int set_hidden(const char* user, const char* title, int hide, char* backu
     int changed, failed = 0;
     if (hide) {
       snprintf(sql, sizeof sql, "UPDATE tbl_iconinfo_%s SET visible = 0 WHERE titleId = ?1 AND visible = 1 AND "
-               "(dispLocation IN (%d, %d) OR titleId = '" STORE_TITLE "')", user, GAMES_TAB, MEDIA_TAB);
+               "(dispLocation IN (%d, %d) OR titleId IN ('" STORE_TITLE "', '" GALLERY_TITLE "'))", user, GAMES_TAB, MEDIA_TAB);
       changed = run_title(db, sql, user, title);
       failed = changed < 0 || (changed && (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS lineup_hidden (user TEXT, titleId "
                "TEXT, PRIMARY KEY (user, titleId))", NULL, NULL, NULL) != SQLITE_OK ||
@@ -2658,6 +2660,12 @@ static void test_pins(void) {
   assert(set_hidden(one, "NPXS40037", 0, backup, sizeof backup, message, sizeof message) == 409);
   assert(set_hidden(one, STORE_TITLE, 1, backup, sizeof backup, message, sizeof message) == 200);
   assert(scalar("SELECT COUNT(*) FROM lineup_hidden") == 2);
+  run("INSERT INTO tbl_iconinfo_%1$s (titleId, titleName, lastAccessIndex, visible, dispLocation) VALUES ('%2$s','Gallery',1,1,154)", one, GALLERY_TITLE);
+  assert(set_hidden(one, GALLERY_TITLE, 1, backup, sizeof backup, message, sizeof message) == 200);
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 1 WHERE titleId = '%2$s'", one, GALLERY_TITLE);
+  assert(!scalar("SELECT visible FROM tbl_iconinfo_0000000001 WHERE titleId = '" GALLERY_TITLE "'"));
+  assert(set_hidden(one, GALLERY_TITLE, 0, backup, sizeof backup, message, sizeof message) == 200);
+  assert(scalar("SELECT visible FROM tbl_iconinfo_0000000001 WHERE titleId = '" GALLERY_TITLE "'") == 1);
   // The console brings a hidden app back with an update or a new row; the triggers take it away, and only it.
   const char* store_visible = "SELECT visible FROM tbl_iconinfo_0000000001 WHERE titleId = '" STORE_TITLE "'";
   run("UPDATE tbl_iconinfo_%1$s SET visible = 1 WHERE titleId = '%2$s'", one, STORE_TITLE);

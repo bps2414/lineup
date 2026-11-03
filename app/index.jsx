@@ -273,6 +273,7 @@ const LIFT_HINTS = [['dpad', H.move], ['cross', H.drop], ['circle', H.cancel]];
 const PICK_HINTS = [['cross', H.choose], ['circle', H.back]];
 
 const STORE = 'NPXS40047';
+const GALLERY = 'NPXS40075';
 
 // The side sheet's pages: title and subtitle. The menu and Updates work out their own subtitle.
 const SHEETS = {menu: [T.menu.title], profiles: [T.profilesTitle, T.profilesSubtitle], updates: [T.updates.title],
@@ -649,6 +650,8 @@ function App() {
   const focused = s.games[s.order[s.focus]];
   const hiddenApps = s.hidden ?? [];
   const storeHidden = hiddenApps.some(app => app.titleId === STORE);
+  const galleryHidden = hiddenApps.some(app => app.titleId === GALLERY);
+  const otherHidden = hiddenApps.filter(app => app.titleId !== STORE && app.titleId !== GALLERY);
   const otherTab = s.tab === 'games' ? 'media' : 'games';
 
   if (s.phase === 'loading') {
@@ -719,12 +722,14 @@ function App() {
           {s.layer === 'hidden' ? [
             <SheetItem key="store" label={T.apps.store} detail={storeHidden ? T.apps.storeHidden : T.apps.storeShown}
               onPress={() => changeApp(STORE, storeHidden ? 'show' : 'hide', T.apps.store)} />,
+            <SheetItem key="gallery" label={T.apps.gallery} detail={galleryHidden ? T.apps.galleryHidden : T.apps.galleryShown}
+              onPress={() => changeApp(GALLERY, galleryHidden ? 'show' : 'hide', T.apps.gallery)} />,
             <SheetRule key="rule" />,
-            ...hiddenApps.filter(app => app.titleId !== STORE).map(app => (
+            ...otherHidden.map(app => (
               <SheetItem key={app.titleId} label={app.name} detail={T.apps.show}
                 onPress={() => changeApp(app.titleId, 'show', app.name)} />
             )),
-            hiddenApps.some(app => app.titleId !== STORE) ? null : <SheetNote key="none">{T.apps.none}</SheetNote>,
+            otherHidden.length ? null : <SheetNote key="none">{T.apps.none}</SheetNote>,
           ] : s.layer === 'arrange' ? [
             <SheetItem key="sort" label={T.menu.sort} onPress={sortAZ} />,
             <SheetItem key="pin-all" label={T.pins.pinAll} onPress={() => pinAll(true)} />,

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.0
+
+- A moved app stays on its new tab when it is installed again. Game Compressor's payload installs its shortcut
+  again each time it starts, which put it back under Games (#11).
+- Lineup itself can move to the Media tab (#12).
+- Hidden apps has a switch for the Media Gallery, like the one for the PS Store (#12).
+- The bug report adds where each app is installed.
+- More options has Star Lineup on GitHub: a QR code to open the repository on your phone.
+
 ## 1.7.0
 
 - What you hid stays hidden across a console restart. The PS Store used to come back on its own, and if it did on
