@@ -1,0 +1,38 @@
+---
+import { getAbsoluteLocaleUrl } from 'astro:i18n';
+import '@fontsource-variable/schibsted-grotesk';
+import '../styles/global.css';
+import { htmlLang, locales, strings, type Locale } from '../i18n/strings';
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const s = strings[locale];
+const base = import.meta.env.BASE_URL.replace(/\/?$/, '/');
+---
+
+<!doctype html>
+<html lang={htmlLang[locale]}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{s.meta.title}</title>
+    <meta name="description" content={s.meta.description} />
+    <meta name="theme-color" content="#000000" />
+    <link rel="icon" href={`${base}favicon.svg`} type="image/svg+xml" />
+    <link rel="canonical" href={getAbsoluteLocaleUrl(locale, '')} />
+    {locales.map((l) => <link rel="alternate" hreflang={htmlLang[l]} href={getAbsoluteLocaleUrl(l, '')} />)}
+    <link rel="alternate" hreflang="x-default" href={getAbsoluteLocaleUrl('en', '')} />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={s.meta.title} />
+    <meta property="og:description" content={s.meta.description} />
+    <meta property="og:url" content={getAbsoluteLocaleUrl(locale, '')} />
+    <meta property="og:image" content={new URL(`${base}home-edge.png`, Astro.site).href} />
+    <meta property="og:locale" content={htmlLang[locale].replace('-', '_')} />
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>

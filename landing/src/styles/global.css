@@ -1,0 +1,140 @@
+:root {
+  /* The logo's own black, and the greys of the app. The only colour on the page is the covers. */
+  --black: #000;
+  --raised: #212125;
+  --ink: #f2f2f3;
+  --ink-soft: #a3a3ab;
+  --ink-faint: #5a5a63;
+  --line: #2a2a2f;
+
+  --font: 'Schibsted Grotesk Variable', 'Segoe UI', system-ui, sans-serif;
+
+  --step--1: 0.9rem;
+  --step-0: 1.0625rem;
+  --step-1: 1.3rem;
+  --step-2: clamp(1.7rem, 1.3rem + 1.6vw, 2.6rem);
+  --step-hero: clamp(2.5rem, 1.1rem + 5.6vw, 5.8rem);
+
+  --gutter: clamp(1rem, 0.4rem + 3vw, 3rem);
+  --wide: 72rem;
+  --measure: 36rem;
+  --space: clamp(4.5rem, 2.5rem + 7vw, 9rem);
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  overflow-x: clip;
+}
+
+body {
+  margin: 0;
+  background: var(--black);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: var(--step-0);
+  line-height: 1.6;
+}
+
+h1,
+h2,
+h3 {
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  margin: 0;
+  text-wrap: balance;
+}
+
+h2 {
+  font-size: var(--step-2);
+}
+
+h3 {
+  font-size: var(--step-1);
+  line-height: 1.25;
+  letter-spacing: -0.005em;
+}
+
+p {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+a {
+  color: inherit;
+  text-decoration-color: var(--ink-faint);
+  text-underline-offset: 0.2em;
+}
+
+a:hover {
+  text-decoration-color: currentColor;
+}
+
+/* The console's own focus: a white ring. */
+:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.wrap {
+  width: 100%;
+  max-width: calc(var(--wide) + 2 * var(--gutter));
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+.section {
+  padding-top: var(--space);
+}
+
+.lede {
+  margin-top: 1.1rem;
+  max-width: var(--measure);
+  color: var(--ink-soft);
+  font-size: var(--step-1);
+  line-height: 1.5;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 3.25rem;
+  padding: 0.7rem 1.6rem;
+  border-radius: 999px;
+  background: #fff;
+  color: #000;
+  font-weight: 700;
+  font-size: var(--step-0);
+  text-decoration: none;
+  transition: box-shadow 0.15s;
+}
+
+.button:hover {
+  box-shadow: 0 0 0 4px rgb(255 255 255 / 0.25);
+}
+
+.button.quiet {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

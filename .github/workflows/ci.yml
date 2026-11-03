@@ -2,7 +2,9 @@ name: ci
 on:
   push:
     branches: [main]
+    paths-ignore: ['landing/**', '.github/workflows/pages.yml']
   pull_request:
+    paths-ignore: ['landing/**', '.github/workflows/pages.yml']
 
 jobs:
   build:

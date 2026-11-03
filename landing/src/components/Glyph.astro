@@ -1,0 +1,26 @@
+---
+// Face-button shapes drawn as strokes, so they match in size and weight whatever the font has.
+interface Props {
+  name: string;
+}
+
+const { name } = Astro.props;
+const shapes: Record<string, string> = {
+  '✕': 'M6 6 18 18M18 6 6 18',
+  '□': 'M6 6h12v12H6z',
+  '△': 'M12 4.5 20 18.5H4z',
+  '◯': 'M12 4.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 1 0 0-15z',
+  '▶': 'M8 5.5 18 12 8 18.5z',
+};
+---
+
+<svg class="glyph" viewBox="0 0 24 24" width="1em" height="1em" aria-hidden="true">
+  <path d={shapes[name]} fill={name === '▶' ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+
+<style>
+  .glyph {
+    display: inline-block;
+    vertical-align: -0.125em;
+  }
+</style>

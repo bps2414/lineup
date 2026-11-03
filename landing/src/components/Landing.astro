@@ -1,0 +1,451 @@
+---
+import { getRelativeLocaleUrl } from 'astro:i18n';
+import Base from '../layouts/Base.astro';
+import Row from './Row.astro';
+import Glyph from './Glyph.astro';
+import { links, strings, type Locale } from '../i18n/strings';
+
+interface Props {
+  locale: Locale;
+}
+
+const { locale } = Astro.props;
+const s = strings[locale];
+const base = import.meta.env.BASE_URL.replace(/\/?$/, '/');
+const languages = [
+  { id: 'en', label: 'English', short: 'EN', lang: 'en' },
+  { id: 'pt-br', label: 'Português', short: 'PT', lang: 'pt-BR' },
+] as const;
+---
+
+<Base locale={locale}>
+  <header class="wrap top">
+    <a class="brand" href={getRelativeLocaleUrl(locale, '')}>
+      <img src={`${base}favicon.svg`} alt="" width="32" height="32" />
+      <span>Lineup</span>
+    </a>
+    <nav class="nav">
+      <ul class="langs" aria-label={s.nav.language}>
+        {
+          languages.map((l) => (
+            <li>
+              <a href={getRelativeLocaleUrl(l.id, '')} hreflang={l.lang} lang={l.lang} aria-current={l.id === locale ? 'page' : undefined}>
+                <abbr title={l.label}>{l.short}</abbr>
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+      <a href={links.repo}>{s.nav.github}</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="wrap hero">
+      <h1>{s.hero.title}</h1>
+      <div class="hero-side">
+        <p class="lede">{s.hero.lede}</p>
+        <div class="actions">
+          <a class="button" href={links.latest}>{s.hero.download}</a>
+          <a class="source" href={links.repo}>{s.hero.source}</a>
+        </div>
+        <p class="fine">{s.hero.fine}</p>
+      </div>
+      <div class="row-wrap">
+        <Row caption={s.hero.caption} keys={s.hero.keys} />
+      </div>
+    </section>
+
+    <section class="wrap section">
+      <h2>{s.why.title}</h2>
+      <div class="why">
+        {
+          s.why.items.map((it) => (
+            <div>
+              <h3>{it.title}</h3>
+              <p>{it.text}</p>
+            </div>
+          ))
+        }
+      </div>
+      <figure class="shot">
+        <img src={`${base}home-edge.png`} alt={s.why.shot} width="960" height="540" loading="lazy" decoding="async" />
+      </figure>
+    </section>
+
+    <section class="wrap section controls">
+      <div>
+        <h2>{s.controls.title}</h2>
+        <dl class="pad">
+          {
+            s.controls.items.map((it) => (
+              <div>
+                <dt>
+                  <Glyph name={it.key} />
+                </dt>
+                <dd>{it.text}</dd>
+              </div>
+            ))
+          }
+        </dl>
+        <p class="more">{s.controls.more}</p>
+      </div>
+      <figure class="shot">
+        <img src={`${base}options.png`} alt={s.controls.shot} width="960" height="540" loading="lazy" decoding="async" />
+      </figure>
+    </section>
+
+    <section class="wrap section">
+      <h2>{s.safety.title}</h2>
+      <ul class="safety">
+        {s.safety.items.map((it) => <li>{it}</li>)}
+      </ul>
+    </section>
+
+    <section class="wrap section" id="install">
+      <h2>{s.install.title}</h2>
+      <p class="lede">{s.install.needs}</p>
+      <ol class="howto">
+        {s.install.items.map((it) => <li>{it}</li>)}
+      </ol>
+      <p class="after">{s.install.update}</p>
+      <a class="button" href={links.latest}>{s.hero.download}</a>
+    </section>
+
+    <section class="wrap section">
+      <h2>{s.faq.title}</h2>
+      <div class="faq">
+        {
+          s.faq.items.map((it, i) => (
+            <details>
+              <summary>{it.q}</summary>
+              <p>
+                {it.a}
+                {(i === 2 || i === s.faq.items.length - 1) && (
+                  <>
+                    {' '}
+                    <a href={links.issues}>{s.faq.issue}</a>
+                  </>
+                )}
+              </p>
+            </details>
+          ))
+        }
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <div class="wrap">
+      <div class="star">
+        <p>{s.footer.star}</p>
+        <a class="button quiet" href={links.repo}>{s.footer.starCta}</a>
+      </div>
+      <p>{s.footer.disclaimer}</p>
+      <p>{s.footer.credits}</p>
+      <p><a href={links.license}>{s.footer.license}</a></p>
+    </div>
+  </footer>
+</Base>
+
+<style>
+  .top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-block: 1.25rem;
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    font-weight: 700;
+    font-size: var(--step-1);
+    text-decoration: none;
+  }
+
+  .brand img {
+    border-radius: 8px;
+    box-shadow: 0 0 0 1px var(--line);
+  }
+
+  .nav {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    font-size: var(--step--1);
+  }
+
+  .langs {
+    display: flex;
+    gap: 0.25rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .langs a {
+    display: inline-block;
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    color: var(--ink-soft);
+    text-decoration: none;
+  }
+
+  .langs a[aria-current='page'] {
+    color: var(--ink);
+    background: var(--raised);
+  }
+
+  .langs abbr {
+    text-decoration: none;
+  }
+
+  .hero {
+    padding-top: clamp(2.5rem, 1rem + 6vw, 6rem);
+  }
+
+  /* Wide screens: title and pitch side by side, so the row shows in the first screen. */
+  @media (min-width: 64rem) {
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+      column-gap: clamp(2.5rem, 5vw, 5rem);
+      align-items: end;
+      padding-top: clamp(2.5rem, 1rem + 3vw, 4rem);
+    }
+
+    .hero-side .lede {
+      margin-top: 0;
+    }
+
+    .row-wrap {
+      grid-column: 1 / -1;
+    }
+  }
+
+  .hero h1 {
+    max-width: 14ch;
+    font-size: var(--step-hero);
+    font-weight: 800;
+    line-height: 0.98;
+    letter-spacing: -0.035em;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1rem 2rem;
+    margin-top: 2.25rem;
+  }
+
+  .source,
+  .fine {
+    color: var(--ink-soft);
+  }
+
+  .fine {
+    margin-top: 1rem;
+    font-size: var(--step--1);
+  }
+
+  .row-wrap {
+    margin-top: clamp(3rem, 2rem + 4vw, 5.5rem);
+  }
+
+  .why {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+    gap: 2.5rem 3.5rem;
+    margin-top: 2.5rem;
+  }
+
+  .why > div {
+    max-width: var(--measure);
+    padding-top: 1.25rem;
+    border-top: 1px solid var(--line);
+  }
+
+  .why p {
+    margin-top: 0.5rem;
+    color: var(--ink-soft);
+  }
+
+  .shot {
+    margin: clamp(2.5rem, 1.5rem + 3vw, 4rem) 0 0;
+  }
+
+  .shot img {
+    width: 100%;
+    border-radius: 14px;
+    box-shadow: 0 0 0 1px var(--line);
+  }
+
+  .controls {
+    display: grid;
+    gap: 2.5rem 4rem;
+    align-items: center;
+  }
+
+  /* The menu screenshot needs the wider column to stay legible. */
+  @media (min-width: 60rem) {
+    .controls {
+      grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    }
+  }
+
+  .controls .shot {
+    margin: 0;
+  }
+
+  .pad {
+    margin: 2rem 0 0;
+  }
+
+  .pad > div {
+    display: grid;
+    grid-template-columns: 3.25rem 1fr;
+    gap: 1.1rem;
+    align-items: center;
+    padding-block: 0.75rem;
+  }
+
+  /* The face buttons, drawn as round keys. */
+  .pad dt {
+    display: grid;
+    place-items: center;
+    width: 3.25rem;
+    height: 3.25rem;
+    border-radius: 50%;
+    background: var(--raised);
+    font-size: 1.3rem;
+    line-height: 1;
+  }
+
+  .pad dd {
+    margin: 0;
+  }
+
+  .more {
+    margin-top: 1.25rem;
+    max-width: var(--measure);
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+  }
+
+  .safety {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+    gap: 0 3.5rem;
+    margin: 2rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .safety li {
+    max-width: var(--measure);
+    padding-block: 1.1rem;
+    border-top: 1px solid var(--line);
+    color: var(--ink-soft);
+  }
+
+  .howto {
+    margin: 2rem 0 0;
+    padding-left: 1.6rem;
+    max-width: 44rem;
+    font-size: var(--step-1);
+    line-height: 1.45;
+  }
+
+  .howto li + li {
+    margin-top: 1rem;
+  }
+
+  .howto li::marker {
+    font-weight: 800;
+    color: var(--ink-faint);
+  }
+
+  .after {
+    margin: 1.75rem 0 2rem;
+    max-width: var(--measure);
+    color: var(--ink-soft);
+  }
+
+  .faq {
+    max-width: 48rem;
+    margin-top: 2rem;
+  }
+
+  details {
+    border-top: 1px solid var(--line);
+  }
+
+  details:last-child {
+    border-bottom: 1px solid var(--line);
+  }
+
+  summary {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 1.5rem;
+    cursor: pointer;
+    list-style: none;
+    padding-block: 1.1rem;
+    font-weight: 700;
+    font-size: var(--step-1);
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  summary::after {
+    content: '+';
+    flex: none;
+    font-weight: 400;
+    color: var(--ink-soft);
+  }
+
+  details[open] summary::after {
+    content: '−';
+  }
+
+  details p {
+    padding-bottom: 1.25rem;
+    max-width: var(--measure);
+    color: var(--ink-soft);
+  }
+
+  .foot {
+    margin-top: var(--space);
+    padding-block: clamp(3rem, 2rem + 4vw, 5rem);
+    border-top: 1px solid var(--line);
+    color: var(--ink-soft);
+    font-size: var(--step--1);
+  }
+
+  .foot .wrap > p {
+    max-width: 46rem;
+    margin-top: 1rem;
+  }
+
+  .star {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1.25rem 2rem;
+    margin-bottom: 2.5rem;
+  }
+
+  .star p {
+    max-width: 30rem;
+    color: var(--ink);
+    font-size: var(--step-1);
+    line-height: 1.4;
+  }
+</style>
