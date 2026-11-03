@@ -74,9 +74,9 @@ carry `X-Lineup: 1`, so a web page cannot trigger one with a plain form.
 | `GET /avatar/<10 digits>` | `image/png`, `avatar.png` from `/system_data/priv/cache/profile/0x<id>/` (8 or 16 hex digits) |
 | `POST /row?user=<10 digits>[&tab=games\|media]` | body `LIN1\n` then `<titleId> <index>[ pin]\n` per app, in the new order, with the index as read; ` pin` pins the app at that place. `{"ok","backup","integrity"}` |
 | `POST /pins/off?user=<10 digits>` | `{"ok","backup"}`: unpins that profile's games and drops its triggers |
-| `POST /pins/uninstall` | `{"ok","backup"}`: removes every pin, trigger and table Lineup added to `app.db`, and brings back what it hid |
+| `POST /pins/uninstall` | `{"ok","backup"}`: removes every pin, trigger and table Lineup added to `app.db` and `appinfo.db`, brings back what it hid, and leaves moved apps on their tab |
 | `GET /hidden?user=<10 digits>` | `{"hidden":[{"titleId","name"}]}`: what Lineup hid on that profile (`lineup_hidden`) |
-| `POST /app?user=<10 digits>&title=<id>&action=hide\|show\|games\|media` | `{"ok","backup"}`: `hide` and `show` set `visible` on that profile, and `lineup_hide_[ui]_<user>` triggers keep it at 0, since the console sets it back to 1 on a restart. `games` and `media` move homebrew or an emulator on every profile: `tbl_iconinfo_<user>`, `tbl_contentinfo` with its `AppInfoJson`, and `appinfo.db`, in one transaction |
+| `POST /app?user=<10 digits>&title=<id>&action=hide\|show\|games\|media` | `{"ok","backup"}`: `hide` and `show` set `visible` on that profile, and `lineup_hide_[ui]_<user>` triggers keep it at 0, since the console sets it back to 1 on a restart. `games` and `media` move homebrew or an emulator on every profile: `tbl_iconinfo_<user>`, `tbl_contentinfo` with its `AppInfoJson`, and `appinfo.db`, in one transaction, and keep it there (see Moving apps between tabs) |
 | `POST /report` | `{"ok","path"}`: writes `/data/lineup/report.json` with `app.db`'s triggers and, per profile, the apps on the Games (138) and Media (188) tabs, plus `tbl_contentinfo`, only the columns that tell the two tabs apart |
 | `POST /quit` | `{"ok":true}`, then exits |
 | `GET /update/install` | `{"kind":"folder"\|"image","path","previous"}`: the one `PPSA99077` folder or `Lineup-*.exfat` image, and the version kept in `/data/lineup/update/previous/` |
@@ -116,6 +116,18 @@ Media tab, always stays unpinned: with all of them pinned, the last app opened, 
 no place on the home screen and ends up in the library. The app keeps it
 free (Pin the whole row leaves the first place) and offers to free the first place of a row pinned in full by
 1.4.1 or older; `save_order` refuses such a row with 400.
+
+## Moving apps between tabs
+
+`games` and `media` on `POST /app` write the tab in every place the console keeps it (see `move_app`). Installing
+an app again writes it back on the tab its `param.json` names, and Game Compressor's payload does that each time it
+starts. So `lineup_moved` keeps each moved app's tab, in both `app.db` and `appinfo.db`, and triggers put the app
+back when the system writes it anew or changes its tab: `lineup_move_ci` and `lineup_move_cu` on `tbl_contentinfo`,
+`lineup_move_i_<user>` and `lineup_move_u_<user>` on each profile's `tbl_iconinfo_<user>`, and `lineup_move_ai` and
+`lineup_move_au` on `appinfo.db`'s `tbl_appinfo`. They leave `AppInfoJson` alone, since the console's SQLite may
+lack the JSON functions: when it starts, lineupd fixes that, gives a profile made after the move its triggers, and
+puts back anything else off its tab, after a backup. An app moved back to the tab it started on leaves the table,
+and the last one takes the tables and triggers with it. Lineup can move too.
 
 ## Updates
 

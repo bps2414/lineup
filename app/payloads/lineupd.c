@@ -17,7 +17,7 @@
 //   POST /row?user=<10 dig>[&tab=games|media]  X-Lineup: 1; body "LIN1\n" then "<titleId> <index>[ pin]\n" per
 //                                app, in the new order, with the index the client read; " pin" pins it at that place
 //   POST /pins/off?user=<10 dig> X-Lineup: 1; unpins that profile's games
-//   POST /pins/uninstall         X-Lineup: 1; removes every pin, trigger and table Lineup added to app.db
+//   POST /pins/uninstall         X-Lineup: 1; removes every pin, trigger and table Lineup added to app.db and appinfo.db
 //   GET  /hidden?user=<10 dig>   {"hidden":[{"titleId","name"}]}, what Lineup hid on that profile
 //   POST /app?user=<10 dig>&title=<id>&action=hide|show|games|media  X-Lineup: 1; hides or shows an app on that
 //                                profile, or moves it to that tab on every profile
@@ -250,9 +250,10 @@ static int read_tab(sqlite3* db, const char* user, int location, Row* rows, char
   return count;
 }
 
-// Only homebrew and emulators installed under /user/app change tabs: the system's apps, games and PS4 titles stay out.
+// Only homebrew and emulators installed under /user/app change tabs, Lineup too: the system's apps, games and PS4
+// titles stay out.
 static int can_move(const char* title, int type, int place) {
-  return (type == 0 || type == 5) && place == 2 && strncmp(title, "CUSA", 4) && strcmp(title, TITLE_ID);
+  return (type == 0 || type == 5) && place == 2 && strncmp(title, "CUSA", 4);
 }
 
 // Whether the row should offer moving `title`. move_app checks again, with the rest of what it needs.
@@ -700,32 +701,6 @@ static int restore_hidden(void) {
   return failed ? -1 : stale_count;
 }
 
-// Unpins every game of `user` (/pins/off), or of every profile when `user` is NULL (/pins/uninstall), after a
-// backup. Returns the HTTP status; `message` explains a failure.
-static int unpin(const char* user, char* backup, size_t backup_size, char* message, size_t message_size) {
-  sqlite3* db = open_db(1);
-  if (!db) { snprintf(message, message_size, "Could not open the home screen database."); return 500; }
-  int status = 500;
-  if (user && !table_exists(db, user)) { snprintf(message, message_size, "No such profile."); status = 404; goto done; }
-  // Nothing to remove: no backup either.
-  if (user && !has_object(db, "lineup_pin")) { status = 200; goto done; }
-  if (check_and_backup(db, backup, backup_size, message, message_size)) goto done;
-  if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
-    snprintf(message, message_size, "The database is busy (%s). Try again.", sqlite3_errmsg(db));
-    goto done;
-  }
-  if ((user ? drop_pin_triggers(db, user) || forget_pins(db, user) || remove_pins_if_unused(db) : show_all(db) || remove_pins(db)) ||
-      sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
-    snprintf(message, message_size, "The write failed (%s). Nothing changed.", sqlite3_errmsg(db));
-    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
-    goto done;
-  }
-  status = 200;
-done:
-  sqlite3_close(db);
-  return status;
-}
-
 // Replaces the triggers of 1.4.3 and older, which kept pins on the Games tab only, after a backup. Returns how many
 // profiles it updated, or -1.
 static int update_pin_triggers(void) {
@@ -831,28 +806,199 @@ done:
 // is3rdPartyVideoApp, pprHubAppUri and the same values in AppInfoJson on tbl_contentinfo; and DISPLAYLOCATION,
 // CATEGORY_TYPE and HUBAPP_URI on appinfo.db's tbl_appinfo. They get what a native app of the tab holds. Bit 65536 of
 // the category is the Media one, so the rest of it survives a move there and back. Both databases commit together.
+//
+// Installing an app again writes it back on the tab its param.json names, and some payloads (Game Compressor) do
+// that each time they start. So lineup_moved, in both databases, keeps each moved app's tab, and triggers put the app
+// back there whenever the system writes it anew or changes its tab. They leave AppInfoJson alone, since the system's
+// SQLite may lack the JSON functions; restore_moved fixes it when Lineup starts. An app moved back to the tab it
+// started on (`home`) leaves lineup_moved, and the last one takes the tables and triggers with it.
 #define MEDIA_CATEGORY 65536
+#define MOVED_TAB "(SELECT tab FROM lineup_moved WHERE titleId = NEW.titleId)"
+#define HUB_OF(tab) "(CASE " tab " WHEN 188 THEN 'psmediahub:main?titleId=' ELSE 'pshome:gamehub?titleId=' END || NEW.titleId)"
+// Only a row on a tab and off the one it was moved to: the triggers' own writes do not fire them again.
+#define MOVE_WHEN "WHEN NEW.dispLocation IN (138, 188) AND EXISTS (SELECT 1 FROM lineup_moved WHERE titleId = " \
+  "NEW.titleId AND tab <> NEW.dispLocation) BEGIN "
+#define CONTENT_TRIGGER(kind, event) \
+  "CREATE TRIGGER IF NOT EXISTS lineup_move_c" kind " AFTER " event " ON tbl_contentinfo " MOVE_WHEN \
+  "UPDATE tbl_contentinfo SET dispLocation = " MOVED_TAB ", categoryType = CASE " MOVED_TAB " WHEN 188 THEN " \
+  "categoryType | 65536 ELSE categoryType & ~65536 END, is3rdPartyVideoApp = " MOVED_TAB " = 188, pprHubAppUri = " \
+  HUB_OF(MOVED_TAB) " WHERE titleId = NEW.titleId; END;"
+#define ICON_TRIGGER(kind, event) \
+  "CREATE TRIGGER IF NOT EXISTS lineup_move_" kind "_%1$s AFTER " event " ON tbl_iconinfo_%1$s " MOVE_WHEN \
+  "UPDATE tbl_iconinfo_%1$s SET dispLocation = " MOVED_TAB ", hubAppUri = " HUB_OF(MOVED_TAB) " WHERE titleId = " \
+  "NEW.titleId; END;"
+// tbl_appinfo holds one row per key; a row that already has its value fires nothing.
+#define INFO_VALUE "CASE NEW.key WHEN 'DISPLAYLOCATION' THEN " MOVED_TAB " WHEN 'CATEGORY_TYPE' THEN CASE " MOVED_TAB \
+  " WHEN 188 THEN NEW.val | 65536 ELSE NEW.val & ~65536 END ELSE " HUB_OF(MOVED_TAB) " END"
+#define INFO_TRIGGER(kind, event) \
+  "CREATE TRIGGER IF NOT EXISTS info.lineup_move_a" kind " AFTER " event " ON tbl_appinfo WHEN NEW.key IN " \
+  "('DISPLAYLOCATION', 'CATEGORY_TYPE', 'HUBAPP_URI') AND EXISTS (SELECT 1 FROM lineup_moved WHERE titleId = " \
+  "NEW.titleId) AND NEW.val IS NOT (" INFO_VALUE ") BEGIN UPDATE tbl_appinfo SET val = " INFO_VALUE " WHERE " \
+  "titleId = NEW.titleId AND key = NEW.key; END;"
+
+// The profiles, from their tbl_iconinfo_<user> tables, or -1.
+static int icon_users(sqlite3* db, char users[][16]) {
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT substr(name, 14) FROM main.sqlite_master WHERE type = 'table' AND name GLOB "
+                         "'tbl_iconinfo_[0-9]*'", -1, &statement, NULL) != SQLITE_OK) return -1;
+  int count = 0, step = SQLITE_DONE;
+  while (count < MAX_GAMES && (step = sqlite3_step(statement)) == SQLITE_ROW) {
+    const char* user = (const char*)sqlite3_column_text(statement, 0);
+    if (user && is_user_id(user)) snprintf(users[count++], sizeof users[0], "%s", user);
+  }
+  sqlite3_finalize(statement);
+  return step == SQLITE_ROW || step == SQLITE_DONE ? count : -1;
+}
+
+// Attaches appinfo.db as info and checks it. Returns 0, or -1 with `message` set.
+static int attach_appinfo(sqlite3* db, char* message, size_t message_size) {
+  char sql[400], check[128];
+  snprintf(sql, sizeof sql, "ATTACH '%s' AS info", appinfo_path);
+  if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
+    snprintf(message, message_size, "Could not open appinfo.db (%s). Nothing changed.", sqlite3_errmsg(db));
+    return -1;
+  }
+  if (pragma_text(db, "PRAGMA info.quick_check", check, sizeof check)) {
+    snprintf(message, message_size, "appinfo.db failed its check (%s). Nothing changed.", check);
+    return -1;
+  }
+  return 0;
+}
+
+// Copies the attached appinfo.db beside `backup`, app.db's copy. Returns 0, or -1 with `message` set.
+static int backup_appinfo(sqlite3* db, const char* backup, char* message, size_t message_size) {
+  char info_backup[300], sql[400];
+  snprintf(info_backup, sizeof info_backup, "%.*s.appinfo.db", (int)strlen(backup) - 3, backup);
+  unlink(info_backup);
+  snprintf(sql, sizeof sql, "VACUUM info INTO '%s'", info_backup);
+  if (sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK) return 0;
+  snprintf(message, message_size, "The backup failed (%s). Nothing changed.", sqlite3_errmsg(db));
+  return -1;
+}
+
+// Inside a transaction, with appinfo.db attached as info: the triggers of every place.
+static int ensure_moves(sqlite3* db, char users[][16], int count) {
+  if (sqlite3_exec(db, CONTENT_TRIGGER("i", "INSERT") CONTENT_TRIGGER("u", "UPDATE OF dispLocation")
+                   INFO_TRIGGER("i", "INSERT") INFO_TRIGGER("u", "UPDATE OF val"), NULL, NULL, NULL) != SQLITE_OK) return -1;
+  static char sql[4096];
+  for (int i = 0; i < count; ++i)
+    if (snprintf(sql, sizeof sql, ICON_TRIGGER("i", "INSERT") ICON_TRIGGER("u", "UPDATE OF dispLocation"), users[i]) >=
+        (int)sizeof sql || sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
+  return 0;
+}
+
+// Inside a transaction, with appinfo.db attached as info: removes the triggers and tables of the moves, in both.
+static int drop_moves(sqlite3* db) {
+  static char names[2 * MAX_GAMES + 8][96];
+  int count = 0;
+  for (int schema = 0; schema < 2; ++schema) {
+    char sql[160];
+    snprintf(sql, sizeof sql, "SELECT name FROM %s.sqlite_master WHERE type = 'trigger' AND name GLOB 'lineup_move_*'",
+             schema ? "info" : "main");
+    sqlite3_stmt* statement;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) return -1;
+    while (count < (int)(sizeof names / sizeof names[0]) && sqlite3_step(statement) == SQLITE_ROW)
+      snprintf(names[count++], sizeof names[0], "%s.\"%s\"", schema ? "info" : "main",
+               (const char*)sqlite3_column_text(statement, 0));
+    sqlite3_finalize(statement);
+  }
+  for (int i = 0; i < count; ++i) {
+    char sql[128];
+    snprintf(sql, sizeof sql, "DROP TRIGGER %s", names[i]);
+    if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
+  }
+  return sqlite3_exec(db, "DROP TABLE IF EXISTS main.lineup_moved; DROP TABLE IF EXISTS info.lineup_moved;", NULL, NULL,
+                      NULL) == SQLITE_OK ? 0 : -1;
+}
+
+// Inside move_app's transaction, before the write: keeps `title`'s new tab in lineup_moved, or lets the app go when
+// it is back on the tab it started on.
+static int record_move(sqlite3* db, const char* title, int from, int location, char users[][16], int count) {
+  if (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS main.lineup_moved (titleId TEXT PRIMARY KEY, tab INTEGER, home INTEGER);"
+                   "CREATE TABLE IF NOT EXISTS info.lineup_moved (titleId TEXT PRIMARY KEY, tab INTEGER);", NULL, NULL,
+                   NULL) != SQLITE_OK) return -1;
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT home FROM main.lineup_moved WHERE titleId = ?", -1, &statement, NULL) != SQLITE_OK)
+    return -1;
+  sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
+  int home = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : from;
+  sqlite3_finalize(statement);
+  char sql[128];
+  if (home == location) {
+    if (run_title(db, "DELETE FROM main.lineup_moved WHERE titleId = ?1", NULL, title) < 0 ||
+        run_title(db, "DELETE FROM info.lineup_moved WHERE titleId = ?1", NULL, title) < 0) return -1;
+    int left = finds_row(db, "SELECT 1 FROM main.lineup_moved LIMIT 1", NULL);
+    return left < 0 ? -1 : left ? 0 : drop_moves(db);
+  }
+  snprintf(sql, sizeof sql, "INSERT OR REPLACE INTO main.lineup_moved VALUES (?1, %d, %d)", location, home);
+  if (run_title(db, sql, NULL, title) < 0) return -1;
+  snprintf(sql, sizeof sql, "INSERT OR REPLACE INTO info.lineup_moved VALUES (?1, %d)", location);
+  if (run_title(db, sql, NULL, title) < 0) return -1;
+  return ensure_moves(db, users, count);
+}
+
+// Inside a transaction, with appinfo.db attached as info: puts `title` on tab `location` in every place.
+static int write_move(sqlite3* db, const char* title, int location, char users[][16], int count) {
+  int media = location == MEDIA_TAB;
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT categoryType FROM tbl_contentinfo WHERE titleId = ?", -1, &statement, NULL) != SQLITE_OK)
+    return -1;
+  sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
+  long long category = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int64(statement, 0) : 0;
+  sqlite3_finalize(statement);
+  category = media ? category | MEDIA_CATEGORY : category & ~(long long)MEDIA_CATEGORY;
+  char hub[96];
+  snprintf(hub, sizeof hub, media ? "psmediahub:main?titleId=%s" : "pshome:gamehub?titleId=%s", title);
+  const char* const shared[] = {
+    "UPDATE tbl_contentinfo SET dispLocation = ?2, categoryType = ?3, is3rdPartyVideoApp = ?4, pprHubAppUri = ?5, "
+    "AppInfoJson = json_set(AppInfoJson, '$.DISPLAYLOCATION', ?2, '$.CATEGORY_TYPE', ?3, '$.HUBAPP_URI', ?5) "
+    "WHERE titleId = ?1",
+    "UPDATE info.tbl_appinfo SET val = CASE key WHEN 'DISPLAYLOCATION' THEN ?2 WHEN 'CATEGORY_TYPE' THEN ?3 ELSE ?5 END "
+    "WHERE titleId = ?1 AND key IN ('DISPLAYLOCATION', 'CATEGORY_TYPE', 'HUBAPP_URI')",
+  };
+  const int expected[] = {1, 3};
+  for (int i = 0; i < 2; ++i) {
+    if (sqlite3_prepare_v2(db, shared[i], -1, &statement, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
+    sqlite3_bind_int(statement, 2, location);
+    sqlite3_bind_int64(statement, 3, category);
+    sqlite3_bind_int(statement, 4, media);
+    sqlite3_bind_text(statement, 5, hub, -1, SQLITE_STATIC);
+    int failed = sqlite3_step(statement) != SQLITE_DONE || sqlite3_changes(db) != expected[i];
+    sqlite3_finalize(statement);
+    if (failed) return -1;
+  }
+  for (int i = 0; i < count; ++i) {
+    char sql[160];
+    snprintf(sql, sizeof sql, "UPDATE tbl_iconinfo_%s SET dispLocation = ?, hubAppUri = ? WHERE titleId = ?", users[i]);
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_int(statement, 1, location);
+    sqlite3_bind_text(statement, 2, hub, -1, SQLITE_STATIC);
+    sqlite3_bind_text(statement, 3, title, -1, SQLITE_STATIC);
+    int failed = sqlite3_step(statement) != SQLITE_DONE;
+    sqlite3_finalize(statement);
+    if (failed) return -1;
+  }
+  return 0;
+}
 
 // Moves `title` to tab `location` on every profile, after backing up both databases. Returns the HTTP status;
 // `message` explains a failure.
 static int move_app(const char* title, int location, char* backup, size_t backup_size, char* message, size_t message_size) {
-  if (!strcmp(title, TITLE_ID)) { snprintf(message, message_size, "Lineup stays on the Games tab."); return 400; }
   sqlite3* db = open_db(1);
   if (!db) { snprintf(message, message_size, "Could not open the home screen database."); return 500; }
-  int status = 500, began = 0, media = location == MEDIA_TAB;
-  long long category = 0;
+  int status = 500, began = 0, media = location == MEDIA_TAB, from = 0;
   {
     sqlite3_stmt* statement;
-    if (sqlite3_prepare_v2(db, "SELECT dispLocation, appType, contentLocation, categoryType FROM tbl_contentinfo WHERE "
-                           "titleId = ? AND json_valid(AppInfoJson)", -1, &statement, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(db, "SELECT dispLocation, appType, contentLocation FROM tbl_contentinfo WHERE titleId = ? AND "
+                           "json_valid(AppInfoJson)", -1, &statement, NULL) != SQLITE_OK) {
       snprintf(message, message_size, "Could not read the app (%s).", sqlite3_errmsg(db));
       goto done;
     }
     sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
     int found = sqlite3_step(statement) == SQLITE_ROW;
-    int from = found ? sqlite3_column_int(statement, 0) : 0, type = found ? sqlite3_column_int(statement, 1) : 0;
-    int place = found ? sqlite3_column_int(statement, 2) : 0;
-    category = found ? sqlite3_column_int64(statement, 3) : 0;
+    from = found ? sqlite3_column_int(statement, 0) : 0;
+    int type = found ? sqlite3_column_int(statement, 1) : 0, place = found ? sqlite3_column_int(statement, 2) : 0;
     sqlite3_finalize(statement);
     if (!found) { snprintf(message, message_size, "No such app."); status = 404; goto done; }
     if (from != (media ? GAMES_TAB : MEDIA_TAB)) {
@@ -866,86 +1012,112 @@ static int move_app(const char* title, int location, char* backup, size_t backup
       goto done;
     }
   }
-  category = media ? category | MEDIA_CATEGORY : category & ~(long long)MEDIA_CATEGORY;
-  if (check_and_backup(db, backup, backup_size, message, message_size)) goto done;
-  {
-    static char sql[1024];
-    char hub[96], check[128];
-    snprintf(hub, sizeof hub, media ? "psmediahub:main?titleId=%s" : "pshome:gamehub?titleId=%s", title);
-    snprintf(sql, sizeof sql, "ATTACH '%s' AS info", appinfo_path);
-    if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
-      snprintf(message, message_size, "Could not open appinfo.db (%s). Nothing changed.", sqlite3_errmsg(db));
-      goto done;
-    }
-    if (pragma_text(db, "PRAGMA info.quick_check", check, sizeof check)) {
-      snprintf(message, message_size, "appinfo.db failed its check (%s). Nothing changed.", check);
-      goto done;
-    }
-    char info_backup[300];
-    snprintf(info_backup, sizeof info_backup, "%.*s.appinfo.db", (int)strlen(backup) - 3, backup);
-    unlink(info_backup);
-    snprintf(sql, sizeof sql, "VACUUM info INTO '%s'", info_backup);
-    if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK ||
-        sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
-      snprintf(message, message_size, "The backup failed (%s). Nothing changed.", sqlite3_errmsg(db));
-      goto done;
-    }
-    began = 1;
-    const char* const shared[] = {
-      "UPDATE tbl_contentinfo SET dispLocation = ?2, categoryType = ?3, is3rdPartyVideoApp = ?4, pprHubAppUri = ?5, "
-      "AppInfoJson = json_set(AppInfoJson, '$.DISPLAYLOCATION', ?2, '$.CATEGORY_TYPE', ?3, '$.HUBAPP_URI', ?5) "
-      "WHERE titleId = ?1",
-      "UPDATE info.tbl_appinfo SET val = CASE key WHEN 'DISPLAYLOCATION' THEN ?2 WHEN 'CATEGORY_TYPE' THEN ?3 ELSE ?5 END "
-      "WHERE titleId = ?1 AND key IN ('DISPLAYLOCATION', 'CATEGORY_TYPE', 'HUBAPP_URI')",
-    };
-    const int expected[] = {1, 3};
-    int failed = 0;
-    for (int i = 0; !failed && i < 2; ++i) {
-      sqlite3_stmt* statement;
-      failed = sqlite3_prepare_v2(db, shared[i], -1, &statement, NULL) != SQLITE_OK;
-      if (failed) break;
-      sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
-      sqlite3_bind_int(statement, 2, location);
-      sqlite3_bind_int64(statement, 3, category);
-      sqlite3_bind_int(statement, 4, media);
-      sqlite3_bind_text(statement, 5, hub, -1, SQLITE_STATIC);
-      failed = sqlite3_step(statement) != SQLITE_DONE || sqlite3_changes(db) != expected[i];
-      sqlite3_finalize(statement);
-    }
-    static char users[MAX_GAMES][16];
-    int count = 0;
-    if (!failed) {
-      sqlite3_stmt* statement;
-      failed = sqlite3_prepare_v2(db, "SELECT substr(name, 14) FROM main.sqlite_master WHERE type = 'table' AND name GLOB "
-                                  "'tbl_iconinfo_[0-9]*'", -1, &statement, NULL) != SQLITE_OK;
-      while (!failed && count < MAX_GAMES && sqlite3_step(statement) == SQLITE_ROW) {
-        const char* user = (const char*)sqlite3_column_text(statement, 0);
-        if (user && is_user_id(user)) snprintf(users[count++], sizeof users[0], "%s", user);
-      }
-      if (!failed) sqlite3_finalize(statement);
-    }
-    for (int i = 0; !failed && i < count; ++i) {
-      sqlite3_stmt* statement;
-      snprintf(sql, sizeof sql, "UPDATE tbl_iconinfo_%s SET dispLocation = ?, hubAppUri = ? WHERE titleId = ?", users[i]);
-      failed = sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK;
-      if (failed) break;
-      sqlite3_bind_int(statement, 1, location);
-      sqlite3_bind_text(statement, 2, hub, -1, SQLITE_STATIC);
-      sqlite3_bind_text(statement, 3, title, -1, SQLITE_STATIC);
-      failed = sqlite3_step(statement) != SQLITE_DONE;
-      sqlite3_finalize(statement);
-      // A pin is a place on the tab the app just left.
-      if (!failed) failed = forget_pin(db, users[i], title);
-    }
-    if (failed || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
-      snprintf(message, message_size, "The write failed (%s). Nothing changed.", sqlite3_errmsg(db));
-      goto done;
-    }
-    began = 0;
+  static char users[MAX_GAMES][16];
+  int count = icon_users(db, users);
+  if (count < 0) { snprintf(message, message_size, "Could not read the profiles (%s).", sqlite3_errmsg(db)); goto done; }
+  if (check_and_backup(db, backup, backup_size, message, message_size) || attach_appinfo(db, message, message_size) ||
+      backup_appinfo(db, backup, message, message_size)) goto done;
+  if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+    snprintf(message, message_size, "The database is busy (%s). Try again.", sqlite3_errmsg(db));
+    goto done;
   }
+  began = 1;
+  int failed = record_move(db, title, from, location, users, count) || write_move(db, title, location, users, count);
+  // A pin is a place on the tab the app just left.
+  for (int i = 0; !failed && i < count; ++i) failed = forget_pin(db, users[i], title);
+  if (failed || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+    snprintf(message, message_size, "The write failed (%s). Nothing changed.", sqlite3_errmsg(db));
+    goto done;
+  }
+  began = 0;
   status = 200;
 done:
   if (began) sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+  sqlite3_close(db);
+  return status;
+}
+
+// Puts the moved apps back on their tab wherever the triggers could not (AppInfoJson, a profile created after the
+// move, a write while they were missing), and gives every profile its triggers, after a backup. Returns how many apps
+// it changed, or -1.
+static int restore_moved(void) {
+  sqlite3* db = open_db(1);
+  if (!db) return -1;
+  if (!has_object(db, "lineup_moved")) { sqlite3_close(db); return 0; }
+  static char users[MAX_GAMES][16], titles[MAX_GAMES][16];
+  static int tabs[MAX_GAMES];
+  char backup[256] = "", message[300] = "";
+  Buffer sql = {0};
+  int count = icon_users(db, users), stale = 0, complete = 0;
+  int failed = count < 0 || attach_appinfo(db, message, sizeof message);
+  if (!failed) {
+    puts_(&sql, "SELECT m.titleId, m.tab FROM lineup_moved m JOIN tbl_contentinfo c ON c.titleId = m.titleId AND "
+          "json_valid(c.AppInfoJson) WHERE c.dispLocation <> m.tab OR c.AppInfoJson ->> '$.DISPLAYLOCATION' IS NOT m.tab "
+          "OR EXISTS (SELECT 1 FROM info.tbl_appinfo a WHERE a.titleId = m.titleId AND a.key = 'DISPLAYLOCATION' AND "
+          "a.val IS NOT m.tab)");
+    for (int i = 0; i < count; ++i)
+      putf(&sql, " OR EXISTS (SELECT 1 FROM tbl_iconinfo_%s i WHERE i.titleId = m.titleId AND i.dispLocation IN (138, 188) "
+           "AND i.dispLocation <> m.tab)",
+           users[i]);
+    sqlite3_stmt* statement;
+    failed = !sql.data || sqlite3_prepare_v2(db, sql.data, -1, &statement, NULL) != SQLITE_OK;
+    int step = SQLITE_DONE;
+    while (!failed && stale < MAX_GAMES && (step = sqlite3_step(statement)) == SQLITE_ROW) {
+      snprintf(titles[stale], sizeof titles[0], "%s", (const char*)sqlite3_column_text(statement, 0));
+      tabs[stale++] = sqlite3_column_int(statement, 1);
+    }
+    if (!failed) {
+      failed = step != SQLITE_ROW && step != SQLITE_DONE;
+      sqlite3_finalize(statement);
+    }
+    char triggers[300];
+    snprintf(triggers, sizeof triggers, "SELECT 1 WHERE (SELECT COUNT(*) FROM main.sqlite_master WHERE type = 'trigger' AND "
+             "name GLOB 'lineup_move_*') + (SELECT COUNT(*) FROM info.sqlite_master WHERE type = 'trigger' AND name GLOB "
+             "'lineup_move_*') = %d", 4 + 2 * count);
+    complete = failed ? 0 : finds_row(db, triggers, NULL);
+    failed = failed || complete < 0;
+  }
+  if (!failed && (stale || !complete)) {
+    failed = check_and_backup(db, backup, sizeof backup, message, sizeof message) ||
+             backup_appinfo(db, backup, message, sizeof message) ||
+             sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK || ensure_moves(db, users, count);
+    for (int i = 0; !failed && i < stale; ++i) failed = write_move(db, titles[i], tabs[i], users, count);
+    if (failed || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+      LOG("moved apps not restored: %s", *message ? message : sqlite3_errmsg(db));
+      sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+      failed = 1;
+    } else LOG("moved apps restored: %d, backup %s", stale, backup);
+  } else if (failed) LOG("moved apps not checked: %s", *message ? message : sqlite3_errmsg(db));
+  free(sql.data);
+  sqlite3_close(db);
+  return failed ? -1 : stale;
+}
+
+// Unpins every game of `user` (/pins/off), or of every profile when `user` is NULL (/pins/uninstall, which also
+// brings back what Lineup hid and lets go of the moves, leaving the apps where they are), after a backup. Returns
+// the HTTP status; `message` explains a failure.
+static int unpin(const char* user, char* backup, size_t backup_size, char* message, size_t message_size) {
+  sqlite3* db = open_db(1);
+  if (!db) { snprintf(message, message_size, "Could not open the home screen database."); return 500; }
+  int status = 500;
+  if (user && !table_exists(db, user)) { snprintf(message, message_size, "No such profile."); status = 404; goto done; }
+  // Nothing to remove: no backup either.
+  if (user && !has_object(db, "lineup_pin")) { status = 200; goto done; }
+  int moves = !user && has_object(db, "lineup_moved");
+  if (check_and_backup(db, backup, backup_size, message, message_size) ||
+      (moves && (attach_appinfo(db, message, message_size) || backup_appinfo(db, backup, message, message_size)))) goto done;
+  if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+    snprintf(message, message_size, "The database is busy (%s). Try again.", sqlite3_errmsg(db));
+    goto done;
+  }
+  if ((user ? drop_pin_triggers(db, user) || forget_pins(db, user) || remove_pins_if_unused(db) : show_all(db) || remove_pins(db) || (moves && drop_moves(db))) ||
+      sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+    snprintf(message, message_size, "The write failed (%s). Nothing changed.", sqlite3_errmsg(db));
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    goto done;
+  }
+  status = 200;
+done:
   sqlite3_close(db);
   return status;
 }
@@ -1208,8 +1380,8 @@ static int write_report(char* path, size_t path_size, char* message, size_t mess
   }
   puts_(&b, "],\"content\":");
   if (diag_query(&b, db, "SELECT titleId, titleName, dispLocation, viewCategory, categoryType, appType, "
-                 "is3rdPartyVideoApp, appinfoContentType, contentStatus, installStatus, pprDeeplinkUri, pprHubAppUri "
-                 "FROM tbl_contentinfo ORDER BY dispLocation, titleId")) {
+                 "is3rdPartyVideoApp, appinfoContentType, contentStatus, installStatus, contentLocation, pprDeeplinkUri, "
+                 "pprHubAppUri FROM tbl_contentinfo ORDER BY dispLocation, titleId")) {
     failed = -1;
     if (!*error) snprintf(error, sizeof error, "%s", sqlite3_errmsg(db));
   }
@@ -2200,6 +2372,7 @@ int main(void) {
       triggers_checked = 1;
       update_pin_triggers();
       restore_hidden();
+      restore_moved();
     }
     // After the answer is out: the app closes once it has it.
     if (update.pending && run_update()) {
@@ -2307,6 +2480,32 @@ static int has_object_named(const char* name) {
   return exists;
 }
 
+// Runs `sql` on appinfo.db, as the system would.
+static void run_info(const char* sql) {
+  sqlite3* info;
+  assert(sqlite3_open(appinfo_path, &info) == SQLITE_OK && sqlite3_exec(info, sql, NULL, NULL, NULL) == SQLITE_OK);
+  sqlite3_close(info);
+}
+
+// `title`'s values in appinfo.db's tbl_appinfo, in order and joined by |; given a LIKE pattern instead, the names of
+// appinfo.db's objects that match it.
+static const char* info_values(const char* title) {
+  static char text[512];
+  sqlite3* info;
+  sqlite3_stmt* statement;
+  assert(sqlite3_open(appinfo_path, &info) == SQLITE_OK);
+  assert(sqlite3_prepare_v2(info, strchr(title, '%') ? "SELECT group_concat(name, '|') FROM sqlite_master WHERE name LIKE ?"
+                            : "SELECT group_concat(val, '|') FROM (SELECT val FROM tbl_appinfo WHERE titleId = ? ORDER BY "
+                            "rowid)", -1, &statement, NULL) == SQLITE_OK);
+  sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
+  assert(sqlite3_step(statement) == SQLITE_ROW);
+  const char* value = (const char*)sqlite3_column_text(statement, 0);
+  snprintf(text, sizeof text, "%s", value ? value : "");
+  sqlite3_finalize(statement);
+  sqlite3_close(info);
+  return text;
+}
+
 static int show_all_of_test(void) {
   sqlite3* db = open_db(1);
   int result = show_all(db);
@@ -2369,7 +2568,7 @@ static void test_pins(void) {
     assert(write_report(path, sizeof path, message, sizeof message) == 500 && strstr(message, "was saved without it"));
     run("CREATE TABLE tbl_contentinfo (titleId TEXT, titleName TEXT, dispLocation INTEGER, viewCategory INTEGER, "
         "categoryType INTEGER, appType INTEGER, is3rdPartyVideoApp INTEGER, appinfoContentType INTEGER, contentStatus "
-        "INTEGER, installStatus INTEGER, pprDeeplinkUri TEXT, pprHubAppUri TEXT); ALTER TABLE tbl_iconinfo_%1$s ADD "
+        "INTEGER, installStatus INTEGER, contentLocation INTEGER, pprDeeplinkUri TEXT, pprHubAppUri TEXT); ALTER TABLE tbl_iconinfo_%1$s ADD "
         "pinnedStatus INTEGER; ALTER TABLE tbl_iconinfo_%1$s ADD appDrmType INTEGER; ALTER TABLE tbl_iconinfo_%1$s ADD "
         "lastLaunchMethod INTEGER; ALTER TABLE tbl_iconinfo_%1$s ADD deeplinkUri TEXT; ALTER TABLE tbl_iconinfo_%1$s "
         "ADD hubAppUri TEXT", one, "");
@@ -2498,22 +2697,23 @@ static void test_pins(void) {
     assert(sqlite3_exec(info, "CREATE TABLE tbl_appinfo (titleId TEXT, metaDataId TEXT, key TEXT, val BLOB);"
       "INSERT INTO tbl_appinfo VALUES ('PPSA00002','m','DISPLAYLOCATION',138),('PPSA00002','m','CATEGORY_TYPE',512),"
       "('PPSA00002','m','HUBAPP_URI','pshome:gamehub?titleId=PPSA00002'),('PPSA00002','m','TITLE','Two'),"
-      "('PPSA00003','m','DISPLAYLOCATION',138),('PPSA00003','m','CATEGORY_TYPE',0)", NULL, NULL, NULL) == SQLITE_OK);
+      "('PPSA00003','m','DISPLAYLOCATION',138),('PPSA00003','m','CATEGORY_TYPE',0),"
+      "('PPSA99077','m','DISPLAYLOCATION',138),('PPSA99077','m','CATEGORY_TYPE',0),"
+      "('PPSA99077','m','HUBAPP_URI','pshome:gamehub?titleId=PPSA99077')", NULL, NULL, NULL) == SQLITE_OK);
     sqlite3_close(info);
-    run("ALTER TABLE tbl_contentinfo ADD contentLocation INTEGER; ALTER TABLE tbl_contentinfo ADD AppInfoJson TEXT;"
+    run("ALTER TABLE tbl_contentinfo ADD AppInfoJson TEXT;"
         "INSERT INTO tbl_contentinfo (titleId, dispLocation, categoryType, appType, is3rdPartyVideoApp, pprHubAppUri, "
         "contentLocation, AppInfoJson) VALUES ('PPSA00002',138,512,5,0,'pshome:gamehub?titleId=PPSA00002',2,"
         "'{\"DISPLAYLOCATION\":138,\"CATEGORY_TYPE\":512,\"HUBAPP_URI\":\"x\",\"URL\":\"http:\\/\\/a\"}'),"
         "('PPSA00003',138,0,5,0,'pshome:gamehub?titleId=PPSA00003',2,'{}'),('PPSA00005',138,0,1,0,'g',2,'{}'),"
-        "('PPSA00018',188,65536,5,1,'m',0,'{}')", one, "");
+        "('PPSA00018',188,65536,5,1,'m',0,'{}'),('PPSA99077',138,0,5,0,'pshome:gamehub?titleId=PPSA99077',2,'{}')", one, "");
     save_digits(one, "235", "2");
     {
       sqlite3* db = open_db(0);
       assert(is_movable(db, "PPSA00002") && !is_movable(db, "PPSA00005") && !is_movable(db, "PPSA00018") &&
-             !is_movable(db, TITLE_ID) && !is_movable(db, "PPSA09999"));
+             is_movable(db, TITLE_ID) && !is_movable(db, "PPSA09999"));
       sqlite3_close(db);
     }
-    assert(move_app(TITLE_ID, MEDIA_TAB, backup, sizeof backup, message, sizeof message) == 400);
     assert(move_app("PPSA00005", MEDIA_TAB, backup, sizeof backup, message, sizeof message) == 400);
     assert(move_app("PPSA00018", GAMES_TAB, backup, sizeof backup, message, sizeof message) == 400);
     assert(move_app("PPSA00002", GAMES_TAB, backup, sizeof backup, message, sizeof message) == 409);
@@ -2531,8 +2731,51 @@ static void test_pins(void) {
                   "AppInfoJson ->> '$.URL' = 'http://a'") == 1);
     assert(!has_object_named("lineup_pin"));
     expect_row(one, "35");
+    // Installing it again, as Game Compressor does each time it starts, writes it as a game: the triggers keep it on
+    // Media everywhere but AppInfoJson, which restore_moved fixes, once.
+    run("DELETE FROM tbl_contentinfo WHERE titleId = '%2$s'; DELETE FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s';"
+        "INSERT INTO tbl_contentinfo (titleId, dispLocation, categoryType, appType, is3rdPartyVideoApp, pprHubAppUri, "
+        "contentLocation, AppInfoJson) VALUES ('%2$s',138,512,5,0,'pshome:gamehub?titleId=%2$s',2,'{\"DISPLAYLOCATION\""
+        ":138,\"CATEGORY_TYPE\":512,\"HUBAPP_URI\":\"pshome:gamehub?titleId=%2$s\"}');"
+        "INSERT INTO tbl_iconinfo_%1$s (titleId, titleName, lastAccessIndex, visible, dispLocation, hubAppUri) VALUES "
+        "('%2$s','Two',1,1,138,'pshome:gamehub?titleId=%2$s')", one, "PPSA00002");
+    run_info("DELETE FROM tbl_appinfo WHERE titleId = 'PPSA00002'; INSERT INTO tbl_appinfo VALUES "
+             "('PPSA00002','m','DISPLAYLOCATION',138),('PPSA00002','m','CATEGORY_TYPE',512),"
+             "('PPSA00002','m','HUBAPP_URI','pshome:gamehub?titleId=PPSA00002'),('PPSA00002','m','TITLE','Two')");
+    const char* content_moved = "SELECT COUNT(*) FROM tbl_contentinfo WHERE titleId = 'PPSA00002' AND dispLocation = 188 "
+                                "AND categoryType = 66048 AND is3rdPartyVideoApp = 1 AND pprHubAppUri = "
+                                "'psmediahub:main?titleId=PPSA00002'";
+    const char* icon_moved = "SELECT COUNT(*) FROM tbl_iconinfo_0000000001 WHERE titleId = 'PPSA00002' AND dispLocation = "
+                             "188 AND hubAppUri = 'psmediahub:main?titleId=PPSA00002'";
+    const char* json_tab = "SELECT AppInfoJson ->> '$.DISPLAYLOCATION' FROM tbl_contentinfo WHERE titleId = 'PPSA00002'";
+    const char* info_moved = "188|66048|psmediahub:main?titleId=PPSA00002|Two";
+    assert(scalar(content_moved) == 1 && scalar(icon_moved) == 1 && !strcmp(info_values("PPSA00002"), info_moved));
+    assert(scalar(json_tab) == GAMES_TAB);
+    assert(restore_moved() == 1 && restore_moved() == 0);
+    assert(scalar(json_tab) == MEDIA_TAB && scalar(content_moved) == 1);
+    // Or the system changes the tab where it is.
+    run("UPDATE tbl_contentinfo SET dispLocation = 138 WHERE titleId = '%2$s'; UPDATE tbl_iconinfo_%1$s SET "
+        "dispLocation = 138 WHERE titleId = '%2$s'", one, "PPSA00002");
+    run_info("UPDATE tbl_appinfo SET val = 138 WHERE titleId = 'PPSA00002' AND key = 'DISPLAYLOCATION';"
+             "UPDATE tbl_appinfo SET val = 512 WHERE titleId = 'PPSA00002' AND key = 'CATEGORY_TYPE'");
+    assert(scalar(content_moved) == 1 && scalar(icon_moved) == 1 && !strcmp(info_values("PPSA00002"), info_moved));
+    // Apps Lineup did not move stay where the system puts them.
+    run("UPDATE tbl_contentinfo SET dispLocation = 188 WHERE titleId = 'PPSA00003'", one, "");
+    assert(scalar("SELECT dispLocation FROM tbl_contentinfo WHERE titleId = 'PPSA00003'") == MEDIA_TAB);
+    run("UPDATE tbl_contentinfo SET dispLocation = 138 WHERE titleId = 'PPSA00003'", one, "");
+    // A profile made after the move gets its triggers, and the app its tab there, when Lineup starts.
+    run("CREATE TABLE tbl_iconinfo_%1$s (titleId TEXT, titleName TEXT, lastAccessIndex INTEGER, visible INTEGER, "
+        "dispLocation INTEGER, hubAppUri TEXT); INSERT INTO tbl_iconinfo_%1$s VALUES ('%2$s','Two',1,1,138,'g')",
+        "0000000003", "PPSA00002");
+    assert(restore_moved() == 1 && restore_moved() == 0);
+    assert(scalar("SELECT dispLocation FROM tbl_iconinfo_0000000003 WHERE titleId = 'PPSA00002'") == MEDIA_TAB);
+    assert(has_object_named("lineup_move_i_0000000003") && has_object_named("lineup_move_u_0000000003"));
+    run("DROP TABLE tbl_iconinfo_%1$s", "0000000003", "");
     assert(move_app("PPSA00002", GAMES_TAB, backup, sizeof backup, message, sizeof message) == 200);
     assert(scalar("SELECT categoryType FROM tbl_contentinfo WHERE titleId = 'PPSA00002'") == 512);
+    // Back on the tab it started on, nothing of the moves stays, in either database.
+    assert(!scalar("SELECT COUNT(*) FROM sqlite_master WHERE name GLOB 'lineup_move*'"));
+    assert(!strcmp(info_values("lineup_move%"), ""));
     assert(sqlite3_open(appinfo_path, &info) == SQLITE_OK);
     sqlite3_stmt* statement;
     assert(sqlite3_prepare_v2(info, "SELECT group_concat(val, '|') FROM (SELECT val FROM tbl_appinfo WHERE titleId = "
@@ -2541,6 +2784,12 @@ static void test_pins(void) {
     assert(!strcmp((const char*)sqlite3_column_text(statement, 0), "138|512|pshome:gamehub?titleId=PPSA00002|Two"));
     sqlite3_finalize(statement);
     sqlite3_close(info);
+    // Lineup moves too. /pins/uninstall lets go of the moves and leaves it where it is.
+    assert(move_app(TITLE_ID, MEDIA_TAB, backup, sizeof backup, message, sizeof message) == 200);
+    assert(scalar("SELECT COUNT(*) FROM lineup_moved WHERE titleId = '" TITLE_ID "' AND tab = 188 AND home = 138") == 1);
+    assert(unpin(NULL, backup, sizeof backup, message, sizeof message) == 200);
+    assert(!scalar("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'lineup%'") && !strcmp(info_values("lineup%"), ""));
+    assert(scalar("SELECT dispLocation FROM tbl_contentinfo WHERE titleId = '" TITLE_ID "'") == MEDIA_TAB);
     save_digits(one, "235", "3");
     run("DELETE FROM tbl_contentinfo", one, "");
   }

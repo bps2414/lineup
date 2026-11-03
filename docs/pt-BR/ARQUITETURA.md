@@ -74,7 +74,7 @@ formulário simples.
 | `GET /avatar/<10 dígitos>` | `image/png`, o `avatar.png` de `/system_data/priv/cache/profile/0x<id>/` (8 ou 16 dígitos hex) |
 | `POST /row?user=<10 dígitos>[&tab=games\|media]` | corpo `LIN1\n` e depois `<titleId> <índice>[ pin]\n` por app, na nova ordem, com o índice lido; ` pin` fixa o app naquela posição. `{"ok","backup","integrity"}` |
 | `POST /pins/off?user=<10 dígitos>` | `{"ok","backup"}`: desafixa os jogos daquele perfil e apaga os triggers dele |
-| `POST /pins/uninstall` | `{"ok","backup"}`: remove todos os fixos, triggers e tabelas que o Lineup pôs no `app.db` |
+| `POST /pins/uninstall` | `{"ok","backup"}`: remove todos os fixos, triggers e tabelas que o Lineup pôs no `app.db` e no `appinfo.db`, traz de volta o que ele ocultou e deixa os apps movidos na aba em que estão |
 | `POST /report` | `{"ok","path"}`: grava `/data/lineup/report.json` com os triggers do `app.db` e, por perfil, os apps das abas Jogos (138) e Mídia (188), mais a `tbl_contentinfo`, só as colunas que diferenciam as duas abas |
 | `POST /quit` | `{"ok":true}`, e sai |
 | `GET /update/install` | `{"kind":"folder"\|"image","path","previous"}`: a única pasta `PPSA99077` ou imagem `Lineup-*.exfat`, e a versão guardada em `/data/lineup/update/previous/` |
@@ -114,6 +114,18 @@ sempre fica sem fixar: com todos fixos, o último app aberto, como a entrada do 
 inicial e vai parar na biblioteca. O app mantém esse lugar
 livre ("Fixar toda a fileira" deixa o primeiro) e oferece liberar o primeiro lugar de uma fileira toda fixa pela
 1.4.1 ou anterior; o `save_order` recusa essa fileira com 400.
+
+## Mudar de aba
+
+`games` e `media` no `POST /app` gravam a aba em todos os lugares onde o console guarda (veja `move_app`).
+Reinstalar um app grava de volta a aba que o `param.json` dele diz, e o payload do Game Compressor faz isso toda
+vez que inicia. Por isso a `lineup_moved` guarda a aba de cada app movido, no `app.db` e no `appinfo.db`, e triggers
+devolvem o app quando o sistema grava ele de novo ou troca a aba: `lineup_move_ci` e `lineup_move_cu` na
+`tbl_contentinfo`, `lineup_move_i_<user>` e `lineup_move_u_<user>` na `tbl_iconinfo_<user>` de cada perfil, e
+`lineup_move_ai` e `lineup_move_au` na `tbl_appinfo` do `appinfo.db`. Eles não mexem no `AppInfoJson`, porque o
+SQLite do console pode não ter as funções de JSON: ao iniciar, o lineupd corrige isso, cria os triggers de um perfil
+criado depois da mudança e devolve o que mais estiver fora da aba, depois de um backup. Um app que volta para a aba
+de origem sai da tabela, e o último leva as tabelas e os triggers junto. O Lineup também pode mudar de aba.
 
 ## Atualização
 
