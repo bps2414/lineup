@@ -75,8 +75,9 @@ carry `X-Lineup: 1`, so a web page cannot trigger one with a plain form.
 | `POST /row?user=<10 digits>[&tab=games\|media]` | body `LIN1\n` then `<titleId> <index>[ pin]\n` per app, in the new order, with the index as read; ` pin` pins the app at that place. `{"ok","backup","integrity"}` |
 | `POST /pins/off?user=<10 digits>` | `{"ok","backup"}`: unpins that profile's games and drops its triggers |
 | `POST /pins/uninstall` | `{"ok","backup"}`: removes every pin, trigger and table Lineup added to `app.db` and `appinfo.db`, brings back what it hid, and leaves moved apps on their tab |
-| `GET /hidden?user=<10 digits>` | `{"hidden":[{"titleId","name"}]}`: what Lineup hid on that profile (`lineup_hidden`) |
-| `POST /app?user=<10 digits>&title=<id>&action=hide\|show\|games\|media` | `{"ok","backup"}`: `hide` and `show` set `visible` on that profile, and `lineup_hide_[ui]_<user>` triggers keep it at 0, since the console sets it back to 1 on a restart. `games` and `media` move homebrew or an emulator on every profile: `tbl_iconinfo_<user>`, `tbl_contentinfo` with its `AppInfoJson`, and `appinfo.db`, in one transaction, and keep it there (see Moving apps between tabs) |
+| `GET /hidden?user=<10 digits>` | `{"hidden":[{"titleId","name"}],"system":[{"titleId","name","tab","visible","shown"}]}`: what Lineup hid on that profile (`lineup_hidden`), and the system tiles it manages: those showing on that profile, plus the PS Store, the Media Gallery and Welcome whatever their state (never Game Library or App Library). `tab` is the tile's tab from its `dispLocation` bits, `games`, `media` or `none`; `visible` that it shows on that profile (the app lists the other showing tiles to hide); `shown` that Lineup shows it, which is Welcome only (the app offers Hide, else Show) |
+| `POST /app?user=<10 digits>&title=<id>&action=hide\|show\|games\|media` | `{"ok","backup"}`: `hide` and `show` set `visible` on that profile, and `lineup_hide_[ui]_<user>` triggers keep it at 0, since the console sets it back to 1 on a restart. Welcome (`NPXS40063`) is the exception: its `show` and `hide` act on every profile, whichever `user` is given (see Moving system tiles). `games` and `media` move homebrew, an emulator or the Media Gallery on every profile: `tbl_iconinfo_<user>`, `tbl_contentinfo` with its `AppInfoJson`, and `appinfo.db`, in one transaction, and keep it there (see Moving apps between tabs and Moving system tiles) |
+| `POST /tabshifter/remove` | `{"ok","removed","backup"}`: after backing up both databases, takes every row of TabShifter's `TBSH00001` tile and its concept out of them, then its folders. Its `nsx_content_flag_*` rows stay, since the system writes rows of that name too |
 | `POST /report` | `{"ok","path"}`: writes `/data/lineup/report.json` with `app.db`'s triggers and, per profile, the apps on the Games (138) and Media (188) tabs, plus `tbl_contentinfo`, only the columns that tell the two tabs apart |
 | `POST /quit` | `{"ok":true}`, then exits |
 | `GET /update/install` | `{"kind":"folder"\|"image","path","previous"}`: the one `PPSA99077` folder or `Lineup-*.exfat` image, and the version kept in `/data/lineup/update/previous/` |
@@ -201,3 +202,46 @@ console (firmware 13.60):
 - with no arguments, a round trip on a synthetic `app.db`: reorder, refuse a stale save, restore,
   compare;
 - given `<copy of app.db> <userId>`, the same round trip on a real copy.
+
+## Moving system tiles
+
+The Media Gallery (`NPXS40075`) moves between the tabs through `POST /app` with `games` or `media`
+(`move_system`); the PS Store (`NPXS40047`) only hides. A Store an earlier test build moved goes back to the tab it
+started on when Lineup starts (`release_unmovable`). Game Library and App Library never move or hide. The system's own tiles keep
+their tab as two bits of `dispLocation`, as Art Swap and PSGFX found: `0x02` Games and `0x04` Media. On firmware
+13.60 the Store is 146 on Games and 148 on Media (as App Library is), the Gallery 154 and 156, and
+`tbl_concepticoninfo_<user>` holds the same plus 2048. Moving sets one bit and clears the other in every place:
+`tbl_iconinfo_<user>`, `tbl_concepticoninfo_<user>`, `tbl_contentinfo` and `AppInfoJson`, `tbl_conceptmetadata` and
+`ConceptInfoJson`, and `appinfo.db`'s `tbl_appinfo` and `tbl_conceptinfo`. Going to Media also takes the tile out of
+each profile's `MyHome` group. A value with neither bit, a tile the system keeps off both tabs, is never changed.
+
+The Media Gallery is on the row of its tab bit (`TAB_OF` in `lineupd.c`), so it orders and pins with the apps: the
+console raises its `lastAccessIndex` when it opens, as for an app.
+
+The system hides its own tiles with bit `0x01` and `visible = 0` (Welcome and PS Plus are 147). Showing Welcome
+(`show_welcome`, `POST /app` with `show` or `hide`) clears the bit everywhere and sets `visible` on every profile;
+hiding it again puts both back. Every other system tile that is showing, but Game Library and App Library, can hide
+like an app (`lineup_hidden`).
+
+`lineup_system`, in both databases, keeps for each tile the bits to set and to clear, and for Welcome that it is
+shown. `lineup_move_sys_*` triggers on every one of those
+tables set it again when the system writes the other bit, which is what put Art Swap's moves back after a restart or
+rest mode. `restore_system` fixes the JSON and makes missing triggers when Lineup starts. Moving a tile back to its own
+tab takes its row out, and the last one takes the tables and triggers. `/pins/uninstall` removes them too.
+
+## Concept places of moved apps
+
+Lineup up to 1.8.0 left a moved app's concept on its old tab: `tbl_concepticoninfo_<user>` (1162 on Games, 2236 on
+Media, and `hubAppUri`), `tbl_conceptmetadata` (`dispLocation`, `pprHubAppUri` and `display_location` in
+`ConceptInfoJson`) and `appinfo.db`'s `tbl_conceptinfo` (`display_location`, `hubapp_uri`). `move_app` now writes them
+for an app whose concept is its own, and `lineup_moved_concept` gives their `lineup_move_k*` triggers the concept's
+title and tab. `restore_moved` writes apps moved by 1.8.0 once, which records them.
+
+Every trigger and write here is made only when the firmware has its table's columns (`has_column`), so a firmware
+without one gets no trigger that would fail its writes.
+
+## Backups
+
+Before every write, `lineupd` copies `app.db` (and `appinfo.db` when it writes there) to
+`/data/lineup/backups/app-<time>-<n>.db` and `app-<time>-<n>.appinfo.db`, keeping the 10 newest pairs. The first time
+it runs, before any of its checks writes, it also keeps `original-app.db` and `original-appinfo.db` there for good.

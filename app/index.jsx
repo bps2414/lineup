@@ -274,6 +274,7 @@ const PICK_HINTS = [['cross', H.choose], ['circle', H.back]];
 
 const STORE = 'NPXS40047';
 const GALLERY = 'NPXS40075';
+const WELCOME = 'NPXS40063';
 
 // The side sheet's pages: title and subtitle. The menu and Updates work out their own subtitle.
 const SHEETS = {menu: [T.menu.title], profiles: [T.profilesTitle, T.profilesSubtitle], updates: [T.updates.title],
@@ -542,7 +543,7 @@ function App() {
       light(false);
       patch({lifted: false, layer: 'menu'});
       // For the count beside Hidden apps; the page reads it again.
-      api.hidden(ref.current.user).then(hidden => patch({hidden}), () => {});
+      api.hidden(ref.current.user).then(patch, () => {});
       return true;
     }
     if (action === 'l1' || action === 'r1') {
@@ -600,7 +601,7 @@ function App() {
     const {user} = ref.current;
     patch({layer: 'busy'});
     try {
-      patch({hidden: await api.hidden(user), layer: 'hidden'});
+      patch({...await api.hidden(user), layer: 'hidden'});
     } catch (error) {
       close();
       toast(error.detail ?? error.message);
@@ -618,13 +619,30 @@ function App() {
     patch({layer: 'busy'});
     const error = await api.changeApp(p.user, title, action);
     try {
-      if (keep.layer) patch({hidden: await api.hidden(p.user)});
+      if (keep.layer) patch(await api.hidden(p.user));
       await loadRow(p.user, p.profiles, p.tab, keep).catch(() => loadRow(p.user, p.profiles, 'games', keep));
     } catch (problem) {
       patch({phase: 'error', error: problem});
       return;
     }
     toast(error || T.apps.done[action](name));
+  };
+  // The tile may be on the row: after a removal the tab reloads, as after changeApp.
+  const removeTabShifter = async () => {
+    const p = ref.current;
+    patch({layer: 'busy'});
+    const {removed, error} = await api.removeTabShifter();
+    if (!error && removed) {
+      const keep = {focus: p.focus};
+      try {
+        await loadRow(p.user, p.profiles, p.tab, keep).catch(() => loadRow(p.user, p.profiles, 'games', keep));
+      } catch (problem) {
+        patch({phase: 'error', error: problem});
+        return;
+      }
+    }
+    close();
+    toast(error || T.cleanup.done(removed));
   };
   const askApp = layer => {
     if (changed(ref.current)) toast(T.tabs.saveFirst);
@@ -653,6 +671,9 @@ function App() {
   const galleryHidden = hiddenApps.some(app => app.titleId === GALLERY);
   const otherHidden = hiddenApps.filter(app => app.titleId !== STORE && app.titleId !== GALLERY);
   const otherTab = s.tab === 'games' ? 'media' : 'games';
+  // Welcome shows on every profile; the other system tiles showing can hide on this one.
+  const welcome = (s.system ?? []).find(tile => tile.titleId === WELCOME);
+  const otherSystem = (s.system ?? []).filter(tile => tile.visible && ![STORE, GALLERY, WELCOME].includes(tile.titleId));
 
   if (s.phase === 'loading') {
     return (
@@ -724,6 +745,16 @@ function App() {
               onPress={() => changeApp(STORE, storeHidden ? 'show' : 'hide', T.apps.store)} />,
             <SheetItem key="gallery" label={T.apps.gallery} detail={galleryHidden ? T.apps.galleryHidden : T.apps.galleryShown}
               onPress={() => changeApp(GALLERY, galleryHidden ? 'show' : 'hide', T.apps.gallery)} />,
+            welcome && (welcome.shown || welcome.tab !== 'none') ? (
+              <SheetItem key="welcome" label={T.apps.welcome}
+                detail={welcome.shown ? T.apps.welcomeShown : T.apps.welcomeHidden}
+                onPress={() => changeApp(WELCOME, welcome.shown ? 'hide' : 'show', T.apps.welcome)} />
+            ) : null,
+            otherSystem.length ? <SheetLabel key="system">{T.apps.systemLabel}</SheetLabel> : null,
+            ...otherSystem.map(tile => (
+              <SheetItem key={`sys-${tile.titleId}`} label={tile.name} detail={T.apps.hideTile}
+                onPress={() => changeApp(tile.titleId, 'hide', tile.name)} />
+            )),
             <SheetRule key="rule" />,
             ...otherHidden.map(app => (
               <SheetItem key={app.titleId} label={app.name} detail={T.apps.show}
@@ -738,6 +769,7 @@ function App() {
             <SheetItem key="updates" label={T.menu.updates} onPress={() => patch({layer: 'updates'})} />,
             <SheetItem key="report" label={T.report.save} onPress={saveReport} />,
             <SheetItem key="remove-pins" label={T.pins.removeAll} onPress={() => patch({layer: 'removePins'})} />,
+            <SheetItem key="tabshifter" label={T.cleanup.item} onPress={() => askApp('removeTabShifter')} />,
             <SheetItem key="star" label={T.star.item} onPress={() => patch({layer: 'star'})} />,
           ] : s.layer === 'star' ? [
             // The repo's address as a code the phone's camera reads: the audience is at the TV, with no mouse.
@@ -814,6 +846,12 @@ function App() {
         <Dialog title={T.pins.removeTitle} body={T.pins.removeBody} onBack={() => patch({layer: 'more'})}>
           <Button label={T.pins.removeConfirm} onPress={unpinEverywhere} />
           <Button label={T.pins.cancel} onPress={() => patch({layer: 'more'})} />
+        </Dialog>
+      ) : null}
+      {s.layer === 'removeTabShifter' ? (
+        <Dialog title={T.cleanup.title} body={T.cleanup.body} onBack={() => patch({layer: 'more'})}>
+          <Button label={T.cleanup.confirm} onPress={removeTabShifter} />
+          <Button label={T.cleanup.cancel} onPress={() => patch({layer: 'more'})} />
         </Dialog>
       ) : null}
       {s.layer === 'hideApp' ? (

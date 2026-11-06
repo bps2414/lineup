@@ -65,9 +65,24 @@ def main():
                PS5_CLANG=str(llvm / "clang"), PS5_PAYLOAD_SDK=str(sdk), USE_CCACHE="0")
 
     archive = args.opengl_archive or DEPS / "ps5-opengl-sdk-1.0.0.tar.gz"
-    # A copy of the upstream release (blackbearreloaded left GitHub); GL_HASH checks it is the same file.
-    fetch("https://github.com/MyLuxy/overdrive-deps/releases/download/ps5-opengl-v1.0.0/ps5-opengl-sdk-1.0.0.tar.gz",
-          archive, GL_HASH)
+    # Copies of the upstream release (blackbearreloaded left GitHub), tried in turn (dependencies.lock.json). The
+    # first, GL_HASH's file, went away in November 2026. A later one may be the same SDK packed again, with an archive
+    # hash of its own: GL_MANIFEST below pins the SDK's manifest and every file is checked against it.
+    mirrors = [(mirror["url"], mirror["sha256"]) for mirror in LOCK["ps5OpenGL"]["mirrors"]]
+    if archive.exists():
+        if digest(archive) not in {expected for _, expected in mirrors}:
+            raise RuntimeError(f"Checksum mismatch: {archive}")
+    else:
+        for index, (url, expected) in enumerate(mirrors):
+            try:
+                fetch(url, archive, expected)
+                break
+            except (OSError, RuntimeError) as error:
+                print(f"{url}: {error}", flush=True)
+                archive.with_suffix(archive.suffix + ".download").unlink(missing_ok=True)
+                if index == len(mirrors) - 1:
+                    raise
+    gl_archive_hash = digest(archive)  # for the build record: `archive` names a zip file further on
     gl = DEPS / "ps5-opengl-sdk-1.0.0/sdk"
     if not gl.exists():
         with tarfile.open(archive) as package:
@@ -382,7 +397,7 @@ def main():
                 "network_libraries": {p.name: digest(p) for p in network_libs},
                 "sdk_libraries": {p.name: digest(p) for p in sorted(libs.iterdir()) if p.suffix in (".a", ".so")},
                 "ui_reference": HUI_REV, "embedded_react": ER_REV,
-                "opengl_version": "1.0.0", "opengl_archive_sha256": GL_HASH,
+                "opengl_version": "1.0.0", "opengl_archive_sha256": gl_archive_hash,
                 "compiler_builtins_package_sha256": BUILTINS_HASH,
                 "sources": {**{str(p.relative_to(ROOT)): digest(p) for base in (ROOT / "native", ROOT / "runtime", ROOT / "tools", ROOT / "patches")
                                for p in sorted(base.rglob("*")) if p.is_file() and "__pycache__" not in str(p)},

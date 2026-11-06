@@ -55,7 +55,17 @@
   "ps5OpenGL": {
     "version": "1.0.0",
     "sha256": "f93643c04c843d56143b00951df1f8042ea7706ae9f19e4e9abf158e1ead77c5",
-    "manifestSha256": "f4b91f672be037fbac3f82494f1225deaf4c227a03f37ac3ffa56abb213b943f"
+    "manifestSha256": "f4b91f672be037fbac3f82494f1225deaf4c227a03f37ac3ffa56abb213b943f",
+    "mirrors": [
+      {
+        "url": "https://github.com/MyLuxy/overdrive-deps/releases/download/ps5-opengl-v1.0.0/ps5-opengl-sdk-1.0.0.tar.gz",
+        "sha256": "f93643c04c843d56143b00951df1f8042ea7706ae9f19e4e9abf158e1ead77c5"
+      },
+      {
+        "url": "https://github.com/cobanov/PS5LM/releases/download/deps-ps5-opengl-1.0.0/ps5-opengl-sdk-1.0.0.tar.gz",
+        "sha256": "a3ce70a1d3278a2367c3135f034d4925dc85cc4bda30916f44aa474d37241053"
+      }
+    ]
   },
   "sdk": {
     "version": "0.42",
