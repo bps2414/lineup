@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — OpenGL SDK mirror
+
+- `tools/build_ps5.py` downloads the ps5-opengl 1.0.0 archive from a list of mirrors in
+  `dependencies.lock.json`. The MyLuxy/overdrive-deps copy now answers 404; PS5LM's copy is the same
+  SDK packed again (its own archive hash, the same manifest and files). The build record names the
+  hash of the archive it used.
+
 ## Unreleased — app payloads
 
 - Add `Payloads.start(name)` (native ABI v17, `payloads.start`): sends an ELF from the app folder
