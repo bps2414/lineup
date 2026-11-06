@@ -7,7 +7,7 @@
 // screen keeps in memory. Writes go through SQLite in place, inside one transaction, after a backup.
 //
 // Endpoints (JSON unless noted), on 127.0.0.1:9077 (0.0.0.0 when built with -DLINEUPD_LAN):
-//   GET  /version                {"version"}
+//   GET  /version                {"version","build"}
 //   GET  /profiles                 {"profiles":[{"userId","hex","name","avatar"}]}
 //   GET  /row?user=<10 dig>[&tab=games|media]  {"user","tab","pins":"on"|"missing"|"off","games":[{"titleId",
 //                                "name","index","icon","pinned":slot|null}]}; games is the Games tab
@@ -66,6 +66,10 @@
 #endif
 
 #define LINEUPD_VERSION "1.8.0"
+// Which build this is: "local", or the commit for a CI build (.github/workflows/ci.yml writes it, with BUILD in
+// app/api.js). Builds of one version answer /version alike, so without it the app kept talking to a lineupd left
+// running by an earlier test build.
+#define LINEUPD_BUILD "local"
 #define TITLE_ID "PPSA99077"
 #ifdef LINEUPD_DIAG
 // Phase 0 diagnostic build (docs/pt-BR/PLANO-1.2.md): its own port, open to the LAN, so it runs beside the
@@ -2261,7 +2265,7 @@ static int handle(int socket) {
 
   if (get && !strcmp(target, "/version")) {
     Buffer reply = {0};
-    puts_(&reply, "{\"version\":\"" LINEUPD_VERSION "\"}");
+    puts_(&reply, "{\"version\":\"" LINEUPD_VERSION "\",\"build\":\"" LINEUPD_BUILD "\"}");
     respond_json(socket, 200, &reply);
     free(reply.data);
   } else if (get && !strcmp(target, "/profiles")) {

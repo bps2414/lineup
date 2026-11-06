@@ -4,6 +4,9 @@ import {Archives, Downloads, FileSystem, Http, Payloads} from '@ps5-react/core';
 import {T} from './i18n.js';
 
 export const VERSION = '1.8.0';
+// "local", or the commit of a CI build, as LINEUPD_BUILD in lineupd.c: a service of another build is replaced.
+export const BUILD = 'local';
+const SERVICE = `${VERSION}+${BUILD}`;
 const BASE = 'http://127.0.0.1:9077';
 
 /** An error the app shows as is: a short title and what to do about it. */
@@ -55,7 +58,7 @@ async function call(path, {method = 'GET', body, timeoutMs} = {}) {
 async function version() {
   try {
     const {ok, data} = await call('/version', {timeoutMs: 1500});
-    return ok ? data.version ?? '' : '';
+    return ok ? `${data.version ?? ''}+${data.build ?? ''}` : '';
   } catch {
     return null;
   }
@@ -64,7 +67,7 @@ async function version() {
 /** Makes sure this app's version of the service answers, starting (or replacing) it when needed. */
 export async function ensureService(onStep) {
   let running = await version();
-  if (running === VERSION) return;
+  if (running === SERVICE) return;
   if (running !== null) {
     onStep(T.service.replacing);
     await call('/quit', {method: 'POST', timeoutMs: 1500}).catch(() => {});
@@ -77,7 +80,7 @@ export async function ensureService(onStep) {
   for (let waited = 0; waited < 5000; waited += 150) {
     await sleep(150);
     running = await version();
-    if (running === VERSION) return;
+    if (running === SERVICE) return;
   }
   throw problem(T.service.noAnswer);
 }
