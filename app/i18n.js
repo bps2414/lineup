@@ -71,6 +71,8 @@ const en = {
     moveTo: tab => `Move to ${tab}`, hide: 'Hide from the home screen',
     store: 'PS Store', storeHidden: 'Hidden', storeShown: 'Showing',
     gallery: 'Media Gallery', galleryHidden: 'Hidden', galleryShown: 'Showing',
+    welcome: 'Welcome', welcomeShown: 'Showing', welcomeHidden: 'Hidden',
+    systemLabel: 'Other system tiles', hideTile: 'Hide',
     show: 'Bring back',
     none: 'Nothing else is hidden. To hide an app, focus it on the row and open Options.',
     hideTitle: name => `Hide ${name}?`,
@@ -85,6 +87,16 @@ const en = {
       media: name => `${name} moved to Media. The home screen updates when Lineup closes.`,
     },
     failed: detail => `Nothing changed (${detail}).`,
+  },
+  cleanup: {
+    item: 'Remove TabShifter leftovers',
+    title: "Remove TabShifter's tile?",
+    body: 'Lineup backs up both home screen databases first, then takes TabShifter\'s "TS" tile out of them and '
+      + 'deletes its folders. Do this only after deleting TabShifter.',
+    confirm: 'Remove', cancel: 'Cancel',
+    done: removed => (removed ? "TabShifter's tile was removed. The home screen updates when Lineup closes."
+      : 'No TabShifter tile was found.'),
+    failed: detail => `Nothing was removed (${detail}).`,
   },
   report: {
     save: 'Save a bug report',
@@ -222,6 +234,8 @@ const pt = {
     moveTo: tab => `Mover para ${tab}`, hide: 'Esconder da tela inicial',
     store: 'PS Store', storeHidden: 'Escondida', storeShown: 'Aparecendo',
     gallery: 'Galeria de mídia', galleryHidden: 'Escondida', galleryShown: 'Aparecendo',
+    welcome: 'Boas-vindas', welcomeShown: 'Aparecendo', welcomeHidden: 'Escondida',
+    systemLabel: 'Outros blocos do sistema', hideTile: 'Esconder',
     show: 'Trazer de volta',
     none: 'Nada mais está escondido. Para esconder um app, deixe ele em foco na fileira e abra Opções.',
     hideTitle: name => `Esconder ${name}?`,
@@ -236,6 +250,16 @@ const pt = {
       media: name => `${name} foi para Mídia. A tela inicial atualiza quando o Lineup fechar.`,
     },
     failed: detail => `Nada mudou (${detail}).`,
+  },
+  cleanup: {
+    item: 'Remover restos do TabShifter',
+    title: 'Remover o bloco do TabShifter?',
+    body: 'O Lineup faz backup dos dois bancos da tela inicial antes, tira deles o bloco "TS" do TabShifter e apaga '
+      + 'as pastas dele. Faça isso só depois de apagar o TabShifter.',
+    confirm: 'Remover', cancel: 'Cancelar',
+    done: removed => (removed ? 'O bloco do TabShifter foi removido. A tela inicial atualiza quando o Lineup fechar.'
+      : 'Nenhum bloco do TabShifter foi encontrado.'),
+    failed: detail => `Nada foi removido (${detail}).`,
   },
   report: {
     save: 'Salvar relatório de bug',

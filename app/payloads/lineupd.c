@@ -18,9 +18,12 @@
 //                                app, in the new order, with the index the client read; " pin" pins it at that place
 //   POST /pins/off?user=<10 dig> X-Lineup: 1; unpins that profile's games
 //   POST /pins/uninstall         X-Lineup: 1; removes every pin, trigger and table Lineup added to app.db and appinfo.db
-//   GET  /hidden?user=<10 dig>   {"hidden":[{"titleId","name"}]}, what Lineup hid on that profile
+//   GET  /hidden?user=<10 dig>   {"hidden":[{"titleId","name"}],"system":[{"titleId","tab"}]}, what Lineup hid on
+//                                that profile, and the PS Store's and Media Gallery's tabs (games, media or none)
 //   POST /app?user=<10 dig>&title=<id>&action=hide|show|games|media  X-Lineup: 1; hides or shows an app on that
 //                                profile, or moves it to that tab on every profile
+//                                The PS Store and the Media Gallery move too (move_system); not the libraries
+//   POST /tabshifter/remove      X-Lineup: 1; {"ok","removed","backup"}, takes TabShifter's TBSH00001 tile out
 //   POST /report                 X-Lineup: 1; writes /data/lineup/report.json, the Games and Media tabs' apps
 //   POST /quit                   X-Lineup: 1; exits after answering
 //   GET  /update/install         X-Lineup: 1; {"kind":"folder"|"image","path","previous"}
@@ -233,12 +236,19 @@ static int table_exists(sqlite3* db, const char* user) {
 #define GAMES_TAB 138
 #define MEDIA_TAB 188
 
+// The tab a row of tbl_iconinfo_<user> is on, for the row Lineup shows: 138 or 188 as stored, and the Media Gallery
+// (NPXS40075), a system tile, by the tab bit of its own value (0x02 Games, 0x04 Media; see Moving system tiles). The
+// home screen orders it with the apps: opening it raises its lastAccessIndex as it does theirs. NULL off both rows.
+// `p` is NEW., OLD. or empty.
+#define TAB_OF(p) "(CASE WHEN " p "dispLocation IN (138, 188) THEN " p "dispLocation WHEN " p "titleId = 'NPXS40075' " \
+  "THEN CASE WHEN " p "dispLocation & 4 THEN 188 WHEN " p "dispLocation & 2 THEN 138 END END)"
+
 // The apps on tab `location` (GAMES_TAB or MEDIA_TAB), in home order. `user` must already be validated: table
 // names cannot be bound.
 static int read_tab(sqlite3* db, const char* user, int location, Row* rows, char (*names)[256], int capacity) {
-  char sql[160];
+  char sql[512];
   snprintf(sql, sizeof sql, "SELECT titleId, titleName, lastAccessIndex FROM tbl_iconinfo_%s "
-           "WHERE visible = 1 AND dispLocation = %d ORDER BY lastAccessIndex DESC", user, location);
+           "WHERE visible = 1 AND " TAB_OF("") " = %d ORDER BY lastAccessIndex DESC", user, location);
   sqlite3_stmt* statement;
   if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) return -1;
   int count = 0;
@@ -257,7 +267,9 @@ static int read_tab(sqlite3* db, const char* user, int location, Row* rows, char
 // Only homebrew and emulators installed under /user/app change tabs, Lineup too: the system's apps, games and PS4
 // titles stay out.
 static int can_move(const char* title, int type, int place) {
-  return (type == 0 || type == 5) && place == 2 && strncmp(title, "CUSA", 4);
+  // The system's own tiles have appType 0 and contentLocation 2 too; the PS Store and the Media Gallery move
+  // through move_system instead.
+  return (type == 0 || type == 5) && place == 2 && strncmp(title, "CUSA", 4) && strncmp(title, "NPXS", 4);
 }
 
 // Whether the row should offer moving `title`. move_app checks again, with the rest of what it needs.
@@ -301,20 +313,27 @@ static int pragma_text(sqlite3* db, const char* sql, char* out, size_t size) {
 
 static int names_ascending(const void* a, const void* b) { return strcmp(*(char* const*)a, *(char* const*)b); }
 
-// Keeps the newest KEEP_BACKUPS app-*.db files; names carry a zero-padded time, so they sort by age.
+// Keeps the newest KEEP_BACKUPS app-*.db backups, each with its appinfo.db copy beside it (app-<time>-<n>.appinfo.db);
+// names carry a zero-padded time, so they sort by age. original-*.db, the copies from the first start, never go.
 static void rotate_backups(void) {
   DIR* dir = opendir(backup_dir);
   if (!dir) return;
   char* names[256];
   int count = 0;
-  for (struct dirent* entry; (entry = readdir(dir)) && count < 256;)
-    if (!strncmp(entry->d_name, "app-", 4) && strstr(entry->d_name, ".db")) names[count++] = strdup(entry->d_name);
+  for (struct dirent* entry; (entry = readdir(dir)) && count < 256;) {
+    size_t length = strlen(entry->d_name);
+    if (!strncmp(entry->d_name, "app-", 4) && length > 3 && !strcmp(entry->d_name + length - 3, ".db") &&
+        !strstr(entry->d_name, ".appinfo."))
+      names[count++] = strdup(entry->d_name);
+  }
   closedir(dir);
   qsort(names, (size_t)count, sizeof *names, names_ascending);
   for (int i = 0; i < count; ++i) {
     if (i < count - KEEP_BACKUPS) {
       char path[512];
       snprintf(path, sizeof path, "%s/%s", backup_dir, names[i]);
+      unlink(path);
+      snprintf(path, sizeof path, "%s/%.*s.appinfo.db", backup_dir, (int)strlen(names[i]) - 3, names[i]);
       unlink(path);
     }
     free(names[i]);
@@ -337,8 +356,22 @@ static int check_and_backup(sqlite3* db, char* backup, size_t backup_size, char*
     return -1;
   }
   make_dirs(backup_dir);
-  snprintf(backup, backup_size, "%s/app-%010lld.db", backup_dir, (long long)time(NULL));
-  unlink(backup);
+  // A new name each time: Lineup's checks at start can back up several times in the same second, and the first of
+  // those copies is the one taken before any of them changed anything.
+  // The number after the highest taken, not the first free: rotation may have removed a lower one, and a name sorts
+  // as old as its number.
+  long long now = (long long)time(NULL);
+  struct stat taken;
+  int next = 0;
+  for (int n = 99; n >= 0 && !next; --n) {
+    snprintf(backup, backup_size, "%s/app-%010lld-%02d.db", backup_dir, now, n);
+    if (!stat(backup, &taken)) next = n + 1;
+  }
+  snprintf(backup, backup_size, "%s/app-%010lld-%02d.db", backup_dir, now, next);
+  if (next > 99) {
+    snprintf(message, message_size, "Too many backups this second. Nothing was saved.");
+    return -1;
+  }
   char sql[600];
   snprintf(sql, sizeof sql, "VACUUM INTO '%s'", backup);
   if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) {
@@ -347,6 +380,64 @@ static int check_and_backup(sqlite3* db, char* backup, size_t backup_size, char*
   }
   rotate_backups();
   return 0;
+}
+
+// Copies the database at `from` to `to` once: if `to` is there already, it is kept as it is. Returns 0 or -1.
+static int copy_once(const char* from, const char* to) {
+  struct stat info;
+  if (!stat(to, &info)) return 0;
+  sqlite3* db = NULL;
+  int failed = sqlite3_open_v2(from, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK;
+  if (!failed) sqlite3_busy_timeout(db, 5000);
+  char partial[300], sql[700];
+  snprintf(partial, sizeof partial, "%s.partial", to);
+  unlink(partial);
+  snprintf(sql, sizeof sql, "VACUUM INTO '%s'", partial);
+  failed = failed || sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK || rename(partial, to);
+  if (failed) {
+    LOG("could not copy %s to %s: %s", from, to, db ? sqlite3_errmsg(db) : "no memory");
+    unlink(partial);
+  }
+  sqlite3_close(db);
+  return failed ? -1 : 0;
+}
+
+// The first time this lineupd starts, before it changes anything: both databases as they were, kept for good
+// (rotate_backups leaves them alone). Returns 0, or -1 when a copy failed.
+static int backup_originals(void) {
+  make_dirs(backup_dir);
+  char app[300], info[300];
+  snprintf(app, sizeof app, "%s/original-app.db", backup_dir);
+  snprintf(info, sizeof info, "%s/original-appinfo.db", backup_dir);
+  int failed = copy_once(db_path, app);
+  failed = copy_once(appinfo_path, info) || failed;
+  return failed ? -1 : 0;
+}
+
+// Whether `schema` (main or info) has a table or trigger named `name`.
+static int has_object_in(sqlite3* db, const char* schema, const char* name) {
+  char sql[96];
+  snprintf(sql, sizeof sql, "SELECT 1 FROM %s.sqlite_master WHERE name = ?", schema);
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) return 0;
+  sqlite3_bind_text(statement, 1, name, -1, SQLITE_STATIC);
+  int exists = sqlite3_step(statement) == SQLITE_ROW;
+  sqlite3_finalize(statement);
+  return exists;
+}
+
+// Whether `schema`.`table` has a column named `column`: a firmware may not have it, and a trigger or update naming a
+// column that is not there fails, inside the system's own writes for a trigger.
+static int has_column(sqlite3* db, const char* schema, const char* table, const char* column) {
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT 1 FROM pragma_table_info(?1, ?2) WHERE name = ?3", -1, &statement, NULL) != SQLITE_OK)
+    return 0;
+  sqlite3_bind_text(statement, 1, table, -1, SQLITE_STATIC);
+  sqlite3_bind_text(statement, 2, schema, -1, SQLITE_STATIC);
+  sqlite3_bind_text(statement, 3, column, -1, SQLITE_STATIC);
+  int exists = sqlite3_step(statement) == SQLITE_ROW;
+  sqlite3_finalize(statement);
+  return exists;
 }
 
 // ---- Pinned games ----
@@ -366,7 +457,7 @@ static int check_and_backup(sqlite3* db, char* backup, size_t backup_size, char*
 #define REORDER(row) \
   /* The tab as it is now. */ \
   "INSERT OR IGNORE INTO lineup_tmp (titleId, v) SELECT titleId, lastAccessIndex FROM tbl_iconinfo_%1$s " \
-  "WHERE visible = 1 AND dispLocation = " row "dispLocation;" \
+  "WHERE visible = 1 AND " TAB_OF("") " = " TAB_OF(row) ";" \
   /* A pinned game keeps its slot; pinned past the end of a shorter row, they pack at its end in slot order. */ \
   "UPDATE lineup_tmp SET r = (SELECT MIN(p.slot, (SELECT COUNT(*) FROM lineup_tmp) - 1 - (SELECT COUNT(*) " \
   "FROM lineup_pin q, lineup_tmp t WHERE q.user = p.user AND t.titleId = q.titleId AND q.slot > p.slot)) " \
@@ -381,7 +472,7 @@ static int check_and_backup(sqlite3* db, char* backup, size_t backup_size, char*
   "UPDATE lineup_tmp SET nv = (SELECT a.v FROM lineup_tmp a WHERE (SELECT COUNT(*) FROM lineup_tmp b " \
   "WHERE b.v > a.v OR (b.v = a.v AND b.titleId < a.titleId)) = lineup_tmp.r);" \
   "UPDATE tbl_iconinfo_%1$s SET lastAccessIndex = (SELECT t.nv FROM lineup_tmp t WHERE t.titleId = " \
-  "tbl_iconinfo_%1$s.titleId) WHERE visible = 1 AND dispLocation = " row "dispLocation AND titleId IN " \
+  "tbl_iconinfo_%1$s.titleId) WHERE visible = 1 AND " TAB_OF("") " = " TAB_OF(row) " AND titleId IN " \
   "(SELECT titleId FROM lineup_tmp WHERE nv <> v);" \
   "DELETE FROM lineup_tmp;"
 
@@ -390,10 +481,10 @@ static int check_and_backup(sqlite3* db, char* backup, size_t backup_size, char*
 // non-empty lineup_tmp stops them too, should it be on.
 #define PIN_TRIGGER(kind, event, when, row) \
   "CREATE TRIGGER lineup_pin_" kind "_%1$s AFTER " event " ON tbl_iconinfo_%1$s WHEN " when row "visible = 1 AND " \
-  row PIN_TABS " (SELECT 1 FROM lineup_tmp) BEGIN " REORDER(row) " END;"
+  TAB_OF(row) " " PIN_TABS " (SELECT 1 FROM lineup_tmp) BEGIN " REORDER(row) " END;"
 // Triggers without this text are older: 1.4.2's moved the Games tab whatever app fired them, 1.4.3's ran for the
-// Games tab only. update_pin_triggers replaces them.
-#define PIN_TABS "dispLocation IN (138, 188) AND NOT EXISTS"
+// Games tab only, and 1.8.0's left out the Media Gallery. update_pin_triggers replaces them.
+#define PIN_TABS "IS NOT NULL AND NOT EXISTS"
 #define PIN_TRIGGERS \
   PIN_TRIGGER("u", "UPDATE OF lastAccessIndex", "NEW.lastAccessIndex > OLD.lastAccessIndex AND ", "NEW.") \
   PIN_TRIGGER("i", "INSERT", "", "NEW.") PIN_TRIGGER("d", "DELETE", "", "OLD.")
@@ -466,7 +557,7 @@ static int save_pins(sqlite3* db, const char* user, int location, const Row* pos
   // The other tab's pins stay; the rest are this tab's, or of apps that are gone.
   if (has_object(db, "lineup_pin")) {
     snprintf(sql, sizeof sql, "DELETE FROM lineup_pin WHERE user = '%1$s' AND titleId NOT IN (SELECT titleId FROM "
-             "tbl_iconinfo_%1$s WHERE visible = 1 AND dispLocation = %2$d)", user,
+             "tbl_iconinfo_%1$s WHERE visible = 1 AND " TAB_OF("") " = %2$d)", user,
              location == GAMES_TAB ? MEDIA_TAB : GAMES_TAB);
     if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
   }
@@ -538,9 +629,13 @@ static const char* read_pins(sqlite3* db, const char* user, const Row* rows, int
 // again, whether the system updates the row or writes it anew. They read lineup_hidden: a write to the profile's
 // table fails if the table goes before them.
 
-// The PS Store and the Media Gallery have places of their own, off both tabs, and Lineup can hide them too.
+// The system's tiles have places of their own, off both tabs, and Lineup can hide them too: all but Game Library
+// and App Library, which stay, and Welcome, which Lineup shows instead (see show_welcome).
 #define STORE_TITLE "NPXS40047"
 #define GALLERY_TITLE "NPXS40075"
+#define GAME_LIBRARY_TITLE "NPXS40071"
+#define APP_LIBRARY_TITLE "NPXS40139"
+#define KEPT_SYSTEM "('" GAME_LIBRARY_TITLE "', '" APP_LIBRARY_TITLE "', 'NPXS40063')"
 #define HIDE_TRIGGER(kind, event) \
   "CREATE TRIGGER IF NOT EXISTS lineup_hide_" kind "_%1$s AFTER " event " ON tbl_iconinfo_%1$s WHEN NEW.visible = 1 AND " \
   "NEW.titleId IN (SELECT titleId FROM lineup_hidden WHERE user = '%1$s') BEGIN UPDATE tbl_iconinfo_%1$s SET visible = 0 " \
@@ -606,6 +701,10 @@ static int forget_pin(sqlite3* db, const char* user, const char* title) {
 static int set_hidden(const char* user, const char* title, int hide, char* backup, size_t backup_size, char* message,
                       size_t message_size) {
   if (hide && !strcmp(title, TITLE_ID)) { snprintf(message, message_size, "Lineup cannot hide itself."); return 400; }
+  if (!strcmp(title, GAME_LIBRARY_TITLE) || !strcmp(title, APP_LIBRARY_TITLE) || !strcmp(title, "NPXS40063")) {
+    snprintf(message, message_size, "That tile is not hidden by Lineup.");
+    return 400;
+  }
   sqlite3* db = open_db(1);
   if (!db) { snprintf(message, message_size, "Could not open the home screen database."); return 500; }
   int status = 500;
@@ -617,11 +716,12 @@ static int set_hidden(const char* user, const char* title, int hide, char* backu
     goto done;
   }
   {
-    char sql[256];
+    char sql[512];
     int changed, failed = 0;
     if (hide) {
       snprintf(sql, sizeof sql, "UPDATE tbl_iconinfo_%s SET visible = 0 WHERE titleId = ?1 AND visible = 1 AND "
-               "(dispLocation IN (%d, %d) OR titleId IN ('" STORE_TITLE "', '" GALLERY_TITLE "'))", user, GAMES_TAB, MEDIA_TAB);
+               "(dispLocation IN (%d, %d) OR (titleId GLOB 'NPXS*' AND titleId NOT IN " KEPT_SYSTEM "))", user, GAMES_TAB,
+               MEDIA_TAB);
       changed = run_title(db, sql, user, title);
       failed = changed < 0 || (changed && (sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS lineup_hidden (user TEXT, titleId "
                "TEXT, PRIMARY KEY (user, titleId))", NULL, NULL, NULL) != SQLITE_OK ||
@@ -842,6 +942,156 @@ done:
   "NEW.titleId) AND NEW.val IS NOT (" INFO_VALUE ") BEGIN UPDATE tbl_appinfo SET val = " INFO_VALUE " WHERE " \
   "titleId = NEW.titleId AND key = NEW.key; END;"
 
+// The concept places, for an app whose concept is its own (a concept another title shares is left alone):
+// dispLocation and hubAppUri on every profile's tbl_concepticoninfo_<user>, where a tab is kept 1024 (Games) or 2048
+// (Media) above its dispLocation, 1162 and 2236; dispLocation, pprHubAppUri and display_location in ConceptInfoJson
+// on tbl_conceptmetadata; and display_location and hubapp_uri on appinfo.db's tbl_conceptinfo. Lineup up to 1.8.0
+// left them on the old tab. lineup_moved_concept, in both databases, gives their triggers (lineup_move_k*) the
+// concept's title and tab. A place, and its triggers, are written only when the firmware has their columns.
+#define CONCEPT_OF(tab) "(" tab " + CASE " tab " WHEN 188 THEN 2048 ELSE 1024 END)"
+#define K_TAB(key) "(SELECT tab FROM lineup_moved_concept WHERE concept = NEW." key ")"
+#define K_HUB(key) "(CASE " K_TAB(key) " WHEN 188 THEN 'psmediahub:main?titleId=' ELSE 'pshome:gamehub?titleId=' END || " \
+  "(SELECT titleId FROM lineup_moved_concept WHERE concept = NEW." key "))"
+#define K_ICON_TRIGGER(kind, event) \
+  "CREATE TRIGGER IF NOT EXISTS lineup_move_k" kind "_%1$s AFTER " event " ON tbl_concepticoninfo_%1$s WHEN " \
+  "NEW.dispLocation IN (1162, 2236) AND EXISTS (SELECT 1 FROM lineup_moved_concept WHERE concept = NEW.localConceptId " \
+  "AND " CONCEPT_OF("tab") " <> NEW.dispLocation) BEGIN UPDATE tbl_concepticoninfo_%1$s SET dispLocation = " \
+  CONCEPT_OF(K_TAB("localConceptId")) ", hubAppUri = " K_HUB("localConceptId") " WHERE localConceptId = " \
+  "NEW.localConceptId; END;"
+#define K_META_TRIGGER(kind, event) \
+  "CREATE TRIGGER IF NOT EXISTS lineup_move_km" kind " AFTER " event " ON tbl_conceptmetadata WHEN NEW.dispLocation IN " \
+  "(138, 188) AND EXISTS (SELECT 1 FROM lineup_moved_concept WHERE concept = NEW.localConceptId AND tab <> " \
+  "NEW.dispLocation) BEGIN UPDATE tbl_conceptmetadata SET dispLocation = " K_TAB("localConceptId") ", pprHubAppUri = " \
+  K_HUB("localConceptId") " WHERE localConceptId = NEW.localConceptId; END;"
+#define K_INFO_VALUE "CASE NEW.key WHEN 'display_location' THEN " K_TAB("local_concept_id") " ELSE " \
+  K_HUB("local_concept_id") " END"
+#define K_INFO_TRIGGER(kind, event) \
+  "CREATE TRIGGER IF NOT EXISTS info.lineup_move_ka" kind " AFTER " event " ON tbl_conceptinfo WHEN NEW.key IN " \
+  "('display_location', 'hubapp_uri') AND EXISTS (SELECT 1 FROM lineup_moved_concept WHERE concept = " \
+  "NEW.local_concept_id) AND NEW.val IS NOT (" K_INFO_VALUE ") BEGIN UPDATE tbl_conceptinfo SET val = " K_INFO_VALUE \
+  " WHERE local_concept_id = NEW.local_concept_id AND key = NEW.key; END;"
+
+// `json` when it is valid, else an empty object: json_each fails the whole statement on malformed JSON.
+#define SAFE_JSON(json) "CASE WHEN json_valid(" json ") THEN " json " ELSE '{}' END"
+
+// Whether `schema`.`table` has every column of `columns` (NULL-terminated).
+static int has_columns(sqlite3* db, const char* schema, const char* table, const char* const* columns) {
+  for (; *columns; ++columns) if (!has_column(db, schema, table, *columns)) return 0;
+  return 1;
+}
+
+static const char* const CONCEPT_ICON_COLUMNS[] = {"localConceptId", "dispLocation", "hubAppUri", NULL};
+static const char* const CONCEPT_META_COLUMNS[] = {"localConceptId", "dispLocation", "pprHubAppUri", NULL};
+static const char* const CONCEPT_INFO_COLUMNS[] = {"local_concept_id", "key", "val", NULL};
+
+// Runs `sql` with ?1 the number and ?2, ?3 the texts, as far as it has them. Returns the rows changed, or -1.
+static int run_values(sqlite3* db, const char* sql, long long number, const char* second, const char* third) {
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) return -1;
+  int params = sqlite3_bind_parameter_count(statement);
+  if (params >= 1) sqlite3_bind_int64(statement, 1, number);
+  if (params >= 2) sqlite3_bind_text(statement, 2, second, -1, SQLITE_STATIC);
+  if (params >= 3) sqlite3_bind_text(statement, 3, third, -1, SQLITE_STATIC);
+  int step = sqlite3_step(statement);
+  sqlite3_finalize(statement);
+  return step == SQLITE_DONE ? sqlite3_changes(db) : -1;
+}
+
+// `title`'s concept into `out` when no other title has it: 1, 0 when it has none or shares it, -1 on failure.
+static int own_concept(sqlite3* db, const char* title, char* out, size_t size) {
+  if (!has_column(db, "main", "tbl_contentinfo", "localConceptId")) return 0;
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT localConceptId FROM tbl_contentinfo c WHERE titleId = ?1 AND ifnull(localConceptId, "
+                         "'') <> '' AND NOT EXISTS (SELECT 1 FROM tbl_contentinfo o WHERE o.localConceptId = "
+                         "c.localConceptId AND o.titleId <> ?1)", -1, &statement, NULL) != SQLITE_OK) return -1;
+  sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
+  int step = sqlite3_step(statement), found = step == SQLITE_ROW;
+  if (found) snprintf(out, size, "%s", (const char*)sqlite3_column_text(statement, 0));
+  sqlite3_finalize(statement);
+  return found ? 1 : step == SQLITE_DONE ? 0 : -1;
+}
+
+// ConceptInfoJson keeps the concept's tab as the data of its display_location field: made to match dispLocation.
+// Only that value changes; a concept without the field is left as it is.
+static int fix_concept_json(sqlite3* db, const char* concept) {
+  if (!has_column(db, "main", "tbl_conceptmetadata", "ConceptInfoJson")) return 0;
+  return run_values(db, "UPDATE tbl_conceptmetadata SET ConceptInfoJson = json_set(ConceptInfoJson, '$.field_list[' || "
+                    "(SELECT e.key FROM json_each(" SAFE_JSON("ConceptInfoJson") ", '$.field_list') e WHERE e.value ->> '$.key' = "
+                    "'display_location' LIMIT 1) || '].data', dispLocation) WHERE localConceptId = ?2 AND "
+                    "json_valid(ConceptInfoJson) AND EXISTS (SELECT 1 FROM json_each(" SAFE_JSON("ConceptInfoJson") ", '$.field_list') e "
+                    "WHERE e.value ->> '$.key' = 'display_location' AND e.value ->> '$.data' IS NOT dispLocation)",
+                    0, concept, NULL) < 0 ? -1 : 0;
+}
+
+// The concept triggers that are missing (create = 0), or creates them (create = 1: inside a transaction, with
+// appinfo.db attached as info and lineup_moved_concept in both). Returns how many were missing, or -1.
+static int concept_triggers(sqlite3* db, char users[][16], int count, int create) {
+  int missing = 0;
+  static char sql[4096];
+  if (has_columns(db, "main", "tbl_conceptmetadata", CONCEPT_META_COLUMNS) &&
+      (!has_object_in(db, "main", "lineup_move_kmi") || !has_object_in(db, "main", "lineup_move_kmu"))) {
+    ++missing;
+    if (create && sqlite3_exec(db, K_META_TRIGGER("i", "INSERT") K_META_TRIGGER("u", "UPDATE OF dispLocation"), NULL,
+                               NULL, NULL) != SQLITE_OK) return -1;
+  }
+  if (has_columns(db, "info", "tbl_conceptinfo", CONCEPT_INFO_COLUMNS) &&
+      (!has_object_in(db, "info", "lineup_move_kai") || !has_object_in(db, "info", "lineup_move_kau"))) {
+    ++missing;
+    if (create && sqlite3_exec(db, K_INFO_TRIGGER("i", "INSERT") K_INFO_TRIGGER("u", "UPDATE OF val"), NULL, NULL,
+                               NULL) != SQLITE_OK) return -1;
+  }
+  for (int i = 0; i < count; ++i) {
+    char table[64], insert[64], update[64];
+    snprintf(table, sizeof table, "tbl_concepticoninfo_%s", users[i]);
+    snprintf(insert, sizeof insert, "lineup_move_ki_%s", users[i]);
+    snprintf(update, sizeof update, "lineup_move_ku_%s", users[i]);
+    if (!has_columns(db, "main", table, CONCEPT_ICON_COLUMNS) ||
+        (has_object_in(db, "main", insert) && has_object_in(db, "main", update))) continue;
+    ++missing;
+    if (create && (snprintf(sql, sizeof sql, K_ICON_TRIGGER("i", "INSERT") K_ICON_TRIGGER("u", "UPDATE OF dispLocation"),
+                            users[i]) >= (int)sizeof sql || sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK))
+      return -1;
+  }
+  return missing;
+}
+
+// Inside a transaction, with appinfo.db attached as info: keeps `title`'s concept and tab for the concept triggers,
+// when the concept is its own.
+static int record_concept(sqlite3* db, const char* title, int location) {
+  char concept[96];
+  int own = own_concept(db, title, concept, sizeof concept);
+  if (own <= 0) return own;
+  const char* const sql[] = {"INSERT OR REPLACE INTO main.lineup_moved_concept VALUES (?2, ?3, ?1)",
+                             "INSERT OR REPLACE INTO info.lineup_moved_concept VALUES (?2, ?3, ?1)"};
+  for (int i = 0; i < 2; ++i) if (run_values(db, sql[i], location, concept, title) < 0) return -1;
+  return 0;
+}
+
+// Inside a transaction, with appinfo.db attached as info: puts `title`'s own concept on tab `location` in every place
+// the firmware has.
+static int write_concepts(sqlite3* db, const char* title, int location, char users[][16], int count) {
+  char concept[96], hub[96];
+  int own = own_concept(db, title, concept, sizeof concept);
+  if (own <= 0) return own;
+  int media = location == MEDIA_TAB;
+  snprintf(hub, sizeof hub, media ? "psmediahub:main?titleId=%s" : "pshome:gamehub?titleId=%s", title);
+  for (int i = 0; i < count; ++i) {
+    char table[64], sql[200];
+    snprintf(table, sizeof table, "tbl_concepticoninfo_%s", users[i]);
+    if (!has_columns(db, "main", table, CONCEPT_ICON_COLUMNS)) continue;
+    snprintf(sql, sizeof sql, "UPDATE %s SET dispLocation = ?1, hubAppUri = ?2 WHERE localConceptId = ?3", table);
+    if (run_values(db, sql, location + (media ? 2048 : 1024), hub, concept) < 0) return -1;
+  }
+  if (has_columns(db, "main", "tbl_conceptmetadata", CONCEPT_META_COLUMNS) &&
+      (run_values(db, "UPDATE tbl_conceptmetadata SET dispLocation = ?1, pprHubAppUri = ?2 WHERE localConceptId = ?3",
+                  location, hub, concept) < 0 || fix_concept_json(db, concept))) return -1;
+  if (has_columns(db, "info", "tbl_conceptinfo", CONCEPT_INFO_COLUMNS) &&
+      run_values(db, "UPDATE info.tbl_conceptinfo SET val = CASE key WHEN 'display_location' THEN ?1 ELSE ?2 END WHERE "
+                 "local_concept_id = ?3 AND key IN ('display_location', 'hubapp_uri')", location, hub, concept) < 0)
+    return -1;
+  return 0;
+}
+
 // The profiles, from their tbl_iconinfo_<user> tables, or -1.
 static int icon_users(sqlite3* db, char users[][16]) {
   sqlite3_stmt* statement;
@@ -882,25 +1132,32 @@ static int backup_appinfo(sqlite3* db, const char* backup, char* message, size_t
   return -1;
 }
 
-// Inside a transaction, with appinfo.db attached as info: the triggers of every place.
+#define MOVED_CONCEPT_TABLES \
+  "CREATE TABLE IF NOT EXISTS main.lineup_moved_concept (concept TEXT PRIMARY KEY, titleId TEXT, tab INTEGER);" \
+  "CREATE TABLE IF NOT EXISTS info.lineup_moved_concept (concept TEXT PRIMARY KEY, titleId TEXT, tab INTEGER);"
+
+// Inside a transaction, with appinfo.db attached as info: the triggers of every place, and the concept tables their
+// triggers read, made before them.
 static int ensure_moves(sqlite3* db, char users[][16], int count) {
   if (sqlite3_exec(db, CONTENT_TRIGGER("i", "INSERT") CONTENT_TRIGGER("u", "UPDATE OF dispLocation")
-                   INFO_TRIGGER("i", "INSERT") INFO_TRIGGER("u", "UPDATE OF val"), NULL, NULL, NULL) != SQLITE_OK) return -1;
+                   INFO_TRIGGER("i", "INSERT") INFO_TRIGGER("u", "UPDATE OF val") MOVED_CONCEPT_TABLES, NULL, NULL,
+                   NULL) != SQLITE_OK) return -1;
   static char sql[4096];
   for (int i = 0; i < count; ++i)
     if (snprintf(sql, sizeof sql, ICON_TRIGGER("i", "INSERT") ICON_TRIGGER("u", "UPDATE OF dispLocation"), users[i]) >=
         (int)sizeof sql || sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
-  return 0;
+  return concept_triggers(db, users, count, 1) < 0 ? -1 : 0;
 }
 
-// Inside a transaction, with appinfo.db attached as info: removes the triggers and tables of the moves, in both.
+// Inside a transaction, with appinfo.db attached as info: removes the triggers and tables of the moves, in both. The
+// system tiles' (lineup_move_sys_*) have their own.
 static int drop_moves(sqlite3* db) {
-  static char names[2 * MAX_GAMES + 8][96];
+  static char names[4 * MAX_GAMES + 16][96];
   int count = 0;
   for (int schema = 0; schema < 2; ++schema) {
-    char sql[160];
-    snprintf(sql, sizeof sql, "SELECT name FROM %s.sqlite_master WHERE type = 'trigger' AND name GLOB 'lineup_move_*'",
-             schema ? "info" : "main");
+    char sql[200];
+    snprintf(sql, sizeof sql, "SELECT name FROM %s.sqlite_master WHERE type = 'trigger' AND name GLOB 'lineup_move_*' "
+             "AND name NOT GLOB 'lineup_move_sys_*'", schema ? "info" : "main");
     sqlite3_stmt* statement;
     if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) return -1;
     while (count < (int)(sizeof names / sizeof names[0]) && sqlite3_step(statement) == SQLITE_ROW)
@@ -913,8 +1170,9 @@ static int drop_moves(sqlite3* db) {
     snprintf(sql, sizeof sql, "DROP TRIGGER %s", names[i]);
     if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
   }
-  return sqlite3_exec(db, "DROP TABLE IF EXISTS main.lineup_moved; DROP TABLE IF EXISTS info.lineup_moved;", NULL, NULL,
-                      NULL) == SQLITE_OK ? 0 : -1;
+  return sqlite3_exec(db, "DROP TABLE IF EXISTS main.lineup_moved; DROP TABLE IF EXISTS info.lineup_moved;"
+                      "DROP TABLE IF EXISTS main.lineup_moved_concept; DROP TABLE IF EXISTS info.lineup_moved_concept;",
+                      NULL, NULL, NULL) == SQLITE_OK ? 0 : -1;
 }
 
 // Inside move_app's transaction, before the write: keeps `title`'s new tab in lineup_moved, or lets the app go when
@@ -927,12 +1185,25 @@ static int record_move(sqlite3* db, const char* title, int from, int location, c
   if (sqlite3_prepare_v2(db, "SELECT home FROM main.lineup_moved WHERE titleId = ?", -1, &statement, NULL) != SQLITE_OK)
     return -1;
   sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
-  int home = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : from;
+  int recorded = sqlite3_step(statement) == SQLITE_ROW, home = recorded ? sqlite3_column_int(statement, 0) : from;
   sqlite3_finalize(statement);
+  // An app another tool moved is on the tab it was moved to, not its own. The Media bit of the category is the
+  // install's, unless Lineup 1.6 or later changed it: the better guess at where an install puts it back.
+  if (!recorded) {
+    if (sqlite3_prepare_v2(db, "SELECT categoryType FROM tbl_contentinfo WHERE titleId = ?", -1, &statement, NULL) !=
+        SQLITE_OK) return -1;
+    sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
+    if (sqlite3_step(statement) == SQLITE_ROW)
+      home = sqlite3_column_int64(statement, 0) & MEDIA_CATEGORY ? MEDIA_TAB : GAMES_TAB;
+    sqlite3_finalize(statement);
+  }
   char sql[128];
   if (home == location) {
     if (run_title(db, "DELETE FROM main.lineup_moved WHERE titleId = ?1", NULL, title) < 0 ||
         run_title(db, "DELETE FROM info.lineup_moved WHERE titleId = ?1", NULL, title) < 0) return -1;
+    if (has_object_in(db, "main", "lineup_moved_concept") &&
+        (run_title(db, "DELETE FROM main.lineup_moved_concept WHERE titleId = ?1", NULL, title) < 0 ||
+         run_title(db, "DELETE FROM info.lineup_moved_concept WHERE titleId = ?1", NULL, title) < 0)) return -1;
     int left = finds_row(db, "SELECT 1 FROM main.lineup_moved LIMIT 1", NULL);
     return left < 0 ? -1 : left ? 0 : drop_moves(db);
   }
@@ -940,7 +1211,7 @@ static int record_move(sqlite3* db, const char* title, int from, int location, c
   if (run_title(db, sql, NULL, title) < 0) return -1;
   snprintf(sql, sizeof sql, "INSERT OR REPLACE INTO info.lineup_moved VALUES (?1, %d)", location);
   if (run_title(db, sql, NULL, title) < 0) return -1;
-  return ensure_moves(db, users, count);
+  return ensure_moves(db, users, count) || record_concept(db, title, location);
 }
 
 // Inside a transaction, with appinfo.db attached as info: puts `title` on tab `location` in every place.
@@ -985,7 +1256,7 @@ static int write_move(sqlite3* db, const char* title, int location, char users[]
     sqlite3_finalize(statement);
     if (failed) return -1;
   }
-  return 0;
+  return write_concepts(db, title, location, users, count);
 }
 
 // Moves `title` to tab `location` on every profile, after backing up both databases. Returns the HTTP status;
@@ -1043,6 +1314,474 @@ done:
   return status;
 }
 
+// ---- Moving system tiles, and showing Welcome ----
+//
+// The Media Gallery can move between the Games and Media tabs (the PS Store only hides). The system's own tiles keep their tab
+// as two bits of dispLocation, as Art Swap and PSGFX found: 0x02 Games and 0x04 Media (the Store 146 on Games and 148
+// on Media, as App Library is; the Gallery 154 and 156), and 2048 above that on tbl_concepticoninfo_<user>. Moving
+// sets one bit and clears the other wherever a tab is kept: tbl_iconinfo_<user>, tbl_concepticoninfo_<user>,
+// tbl_contentinfo (and DISPLAYLOCATION in AppInfoJson), tbl_conceptmetadata (and display_location in ConceptInfoJson),
+// and appinfo.db's tbl_appinfo (DISPLAYLOCATION) and tbl_conceptinfo (display_location). A value with neither bit, a
+// tile the system keeps off both tabs, is left alone. The Game Library and App Library never move.
+//
+// The system hides a tile of its own with bit 0x01 of the same values and visible = 0 (Welcome and PS Plus are 147,
+// one above the Store's 146). Showing Welcome clears that bit everywhere and sets visible on every profile; hiding it
+// again sets the bit and clears visible. Measured on one console (13.60): Welcome may open nothing on a firmware
+// that retired it.
+//
+// Art Swap wrote its changes only at its Apply changes, and the console put the tiles back on a restart or out of
+// rest mode. lineup_system, in both databases, keeps for each tile the bits to set and to clear (and, for Welcome,
+// that it is shown), and lineup_move_sys_* triggers write them again whenever the system writes one of those places
+// with a bit that should be clear. A tile back as the system had it leaves lineup_system, and the last one takes the
+// tables and triggers with it. JSON is left to restore_system, when Lineup starts.
+#define BIT_HIDDEN 1
+#define BIT_GAMES 2
+#define BIT_MEDIA 4
+#define WELCOME_TITLE "NPXS40063"
+
+// Only the Media Gallery moves; the PS Store only hides.
+static int is_system_movable(const char* title) { return !strcmp(title, GALLERY_TITLE); }
+
+// A place the system keeps a tile's tab in. `table` and `name` have %s for the user on a profile's table. `key` is
+// its column for the tile, matched with lineup_system's column `by` (the title or its concept); `value` holds the
+// tab; `field`, on appinfo.db's key-value tables, is the row's key.
+typedef struct { const char* schema; const char* table; const char* key; const char* by; const char* value;
+                 const char* field; const char* name; } SystemPlace;
+
+static const SystemPlace SYSTEM_PLACES[] = {
+  {"main", "tbl_contentinfo", "titleId", "titleId", "dispLocation", NULL, "c"},
+  {"main", "tbl_conceptmetadata", "localConceptId", "concept", "dispLocation", NULL, "m"},
+  {"info", "tbl_appinfo", "titleId", "titleId", "val", "DISPLAYLOCATION", "a"},
+  {"info", "tbl_conceptinfo", "local_concept_id", "concept", "val", "display_location", "k"},
+  {"main", "tbl_iconinfo_%s", "titleId", "titleId", "dispLocation", NULL, "icon_%s"},
+  {"main", "tbl_concepticoninfo_%s", "localConceptId", "concept", "dispLocation", NULL, "kicon_%s"},
+};
+#define SYSTEM_SHARED 4  // the first four are the console's; the others, each profile's
+#define SYSTEM_PLACE_COUNT ((int)(sizeof SYSTEM_PLACES / sizeof SYSTEM_PLACES[0]))
+#define SYSTEM_ICON 4    // tbl_iconinfo_<user>, which has visible too
+
+// `place`'s table for `user` into `table`, and whether the firmware has its columns.
+static int system_place_ready(sqlite3* db, const SystemPlace* place, const char* user, char* table, size_t size) {
+  snprintf(table, size, place->table, user);
+  return has_column(db, place->schema, table, place->key) && has_column(db, place->schema, table, place->value) &&
+         (!place->field || has_column(db, place->schema, table, "key"));
+}
+
+// `field` as a condition on the row (`prefix` NEW. in a trigger), or nothing.
+static void field_condition(const SystemPlace* place, const char* prefix, char* out, size_t size) {
+  if (place->field) snprintf(out, size, "%skey = '%s' AND ", prefix, place->field);
+  else *out = 0;
+}
+
+// The triggers missing on the places the firmware has (create = 0), or creates them (create = 1: inside a transaction,
+// with appinfo.db attached as info and lineup_system in both). Returns how many were missing, or -1.
+static int system_triggers(sqlite3* db, char users[][16], int count, int create) {
+  int missing = 0;
+  static char sql[2048];
+  for (int p = 0; p < SYSTEM_PLACE_COUNT; ++p)
+    for (int u = 0; u < (p < SYSTEM_SHARED ? 1 : count); ++u) {
+      const SystemPlace* place = &SYSTEM_PLACES[p];
+      const char* user = p < SYSTEM_SHARED ? "" : users[u];
+      char table[64], name[64], insert[96], update[96];
+      if (!system_place_ready(db, place, user, table, sizeof table)) continue;
+      snprintf(name, sizeof name, place->name, user);
+      // Showing Welcome: the system sets visible back to 0 at a restart, as it does for what Lineup hides.
+      if (p == SYSTEM_ICON && has_column(db, "main", table, "visible")) {
+        snprintf(insert, sizeof insert, "lineup_move_sys_vi_%s", user);
+        snprintf(update, sizeof update, "lineup_move_sys_vu_%s", user);
+        if (!has_object_in(db, "main", insert) || !has_object_in(db, "main", update)) {
+          ++missing;
+          for (int kind = 0; create && kind < 2; ++kind)
+            if (snprintf(sql, sizeof sql, "CREATE TRIGGER IF NOT EXISTS main.%s AFTER %s ON %s WHEN NEW.visible = 0 AND "
+                         "EXISTS (SELECT 1 FROM lineup_system WHERE titleId = NEW.titleId AND visible = 1) BEGIN UPDATE "
+                         "%s SET visible = 1 WHERE titleId = NEW.titleId; END;", kind ? update : insert,
+                         kind ? "UPDATE OF visible" : "INSERT", table, table) >= (int)sizeof sql ||
+                sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
+        }
+      }
+      snprintf(insert, sizeof insert, "lineup_move_sys_i_%s", name);
+      snprintf(update, sizeof update, "lineup_move_sys_u_%s", name);
+      if (has_object_in(db, place->schema, insert) && has_object_in(db, place->schema, update)) continue;
+      ++missing;
+      if (!create) continue;
+      char when[64], where[64], set[160], clear[160];
+      field_condition(place, "NEW.", when, sizeof when);
+      field_condition(place, "", where, sizeof where);
+      snprintf(set, sizeof set, "(SELECT setbits FROM lineup_system WHERE %s = NEW.%s)", place->by, place->key);
+      snprintf(clear, sizeof clear, "(SELECT clearbits FROM lineup_system WHERE %s = NEW.%s)", place->by, place->key);
+      for (int kind = 0; kind < 2; ++kind) {
+        // When the system writes a bit the tile should not have, it gets its own back; anything else stays.
+        char event[64];
+        snprintf(event, sizeof event, kind ? "UPDATE OF %s" : "INSERT", place->value);
+        if (snprintf(sql, sizeof sql,
+              "CREATE TRIGGER IF NOT EXISTS %s.%s AFTER %s ON %s WHEN %sEXISTS (SELECT 1 FROM lineup_system s WHERE "
+              "s.%s = NEW.%s AND (CAST(NEW.%s AS INTEGER) & s.clearbits) <> 0) BEGIN UPDATE %s SET %s = "
+              "(CAST(%s AS INTEGER) | %s) & ~%s WHERE %s%s = NEW.%s AND (CAST(%s AS INTEGER) & %s) <> 0; END;",
+              place->schema, kind ? update : insert, event, table, when, place->by, place->key, place->value, table,
+              place->value, place->value, set, clear, where, place->key, place->key, place->value, clear) >=
+                (int)sizeof sql ||
+            sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
+      }
+    }
+  return missing;
+}
+
+// Inside a transaction, with appinfo.db attached as info: removes the system tiles' triggers and tables, in both.
+static int drop_system(sqlite3* db) {
+  static char names[4 * MAX_GAMES + 16][96];
+  int count = 0;
+  for (int schema = 0; schema < 2; ++schema) {
+    char sql[160];
+    snprintf(sql, sizeof sql, "SELECT name FROM %s.sqlite_master WHERE type = 'trigger' AND name GLOB 'lineup_move_sys_*'",
+             schema ? "info" : "main");
+    sqlite3_stmt* statement;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) return -1;
+    while (count < (int)(sizeof names / sizeof names[0]) && sqlite3_step(statement) == SQLITE_ROW)
+      snprintf(names[count++], sizeof names[0], "%s.\"%s\"", schema ? "info" : "main",
+               (const char*)sqlite3_column_text(statement, 0));
+    sqlite3_finalize(statement);
+  }
+  for (int i = 0; i < count; ++i) {
+    char sql[128];
+    snprintf(sql, sizeof sql, "DROP TRIGGER %s", names[i]);
+    if (sqlite3_exec(db, sql, NULL, NULL, NULL) != SQLITE_OK) return -1;
+  }
+  return sqlite3_exec(db, "DROP TABLE IF EXISTS main.lineup_system; DROP TABLE IF EXISTS info.lineup_system;", NULL,
+                      NULL, NULL) == SQLITE_OK ? 0 : -1;
+}
+
+// System tile `title`'s value in tbl_contentinfo into `location`, and its concept into `concept`. Returns -1 on
+// failure, 0 when there is no such tile, 1.
+static int system_tile(sqlite3* db, const char* title, long long* location, char* concept, size_t size) {
+  int concepts = has_column(db, "main", "tbl_contentinfo", "localConceptId");
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, concepts ? "SELECT dispLocation, ifnull(localConceptId, '') FROM tbl_contentinfo WHERE "
+                         "titleId = ?" : "SELECT dispLocation, '' FROM tbl_contentinfo WHERE titleId = ?", -1, &statement,
+                         NULL) != SQLITE_OK) return -1;
+  sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
+  int step = sqlite3_step(statement);
+  if (step == SQLITE_ROW) {
+    *location = sqlite3_column_int64(statement, 0);
+    snprintf(concept, size, "%s", (const char*)sqlite3_column_text(statement, 1));
+  }
+  sqlite3_finalize(statement);
+  return step == SQLITE_ROW ? 1 : step == SQLITE_DONE ? 0 : -1;
+}
+
+// The tab bit of a value: BIT_GAMES, BIT_MEDIA, or 0 off both.
+static int tab_bit(long long location) { return location & BIT_GAMES ? BIT_GAMES : location & BIT_MEDIA ? BIT_MEDIA : 0; }
+
+// Inside a transaction, with appinfo.db attached as info: sets bits `set` and clears `clear` on `title` in every place
+// the firmware has, where the value has a bit of `only`.
+static int write_system(sqlite3* db, const char* title, const char* concept, int set, int clear, int only,
+                        char users[][16], int count) {
+  for (int p = 0; p < SYSTEM_PLACE_COUNT; ++p)
+    for (int u = 0; u < (p < SYSTEM_SHARED ? 1 : count); ++u) {
+      const SystemPlace* place = &SYSTEM_PLACES[p];
+      const int by_concept = !strcmp(place->by, "concept");
+      char table[64], where[64];
+      static char sql[512];
+      if ((by_concept && !*concept) ||
+          !system_place_ready(db, place, p < SYSTEM_SHARED ? "" : users[u], table, sizeof table)) continue;
+      field_condition(place, "", where, sizeof where);
+      snprintf(sql, sizeof sql, "UPDATE %s.%s SET %s = (CAST(%s AS INTEGER) | %d) & ~%d WHERE %s%s = ?2 AND "
+               "(CAST(%s AS INTEGER) & %d) <> 0", place->schema, table, place->value, place->value, set, clear, where,
+               place->key, place->value, only);
+      if (run_values(db, sql, 0, by_concept ? concept : title, NULL) < 0) return -1;
+    }
+  // The JSON copies: only the tab's value changes.
+  if (has_column(db, "main", "tbl_contentinfo", "AppInfoJson") &&
+      run_values(db, "UPDATE tbl_contentinfo SET AppInfoJson = json_set(AppInfoJson, '$.DISPLAYLOCATION', dispLocation) "
+                 "WHERE titleId = ?2 AND json_valid(AppInfoJson) AND json_type(AppInfoJson, '$.DISPLAYLOCATION') IS NOT "
+                 "NULL AND AppInfoJson ->> '$.DISPLAYLOCATION' IS NOT dispLocation", 0, title, NULL) < 0) return -1;
+  if (*concept && fix_concept_json(db, concept)) return -1;
+  // Off the Games row, a tile leaves each profile's MyHome group, which places the system's tiles there; the rest
+  // keep their order.
+  for (int u = 0; set == BIT_MEDIA && u < count; ++u) {
+    char table[64], sql[300];
+    snprintf(table, sizeof table, "tbl_group_%s", users[u]);
+    if (!has_column(db, "main", table, "itemId") || !has_column(db, "main", table, "groupName") ||
+        !has_column(db, "main", table, "idx")) continue;
+    snprintf(sql, sizeof sql, "DELETE FROM %s WHERE groupName = 'MyHome' AND itemId = ?2", table);
+    int removed = run_values(db, sql, 0, title, NULL);
+    if (removed < 0) return -1;
+    snprintf(sql, sizeof sql, "UPDATE %1$s SET idx = (SELECT COUNT(*) FROM %1$s g WHERE g.groupName = 'MyHome' AND "
+             "g.idx <= %1$s.idx) WHERE groupName = 'MyHome'", table);
+    if (removed && run_values(db, sql, 0, NULL, NULL) < 0) return -1;
+  }
+  return 0;
+}
+
+// Inside a transaction: `title`'s visible on every profile.
+static int system_visible(sqlite3* db, const char* title, int visible, char users[][16], int count) {
+  for (int u = 0; u < count; ++u) {
+    char table[64], sql[160];
+    snprintf(table, sizeof table, "tbl_iconinfo_%s", users[u]);
+    if (!has_column(db, "main", table, "visible")) continue;
+    snprintf(sql, sizeof sql, "UPDATE %s SET visible = ?1 WHERE titleId = ?2 AND visible IS NOT ?1", table);
+    if (run_values(db, sql, visible, title, NULL) < 0) return -1;
+  }
+  return 0;
+}
+
+#define SYSTEM_TABLES \
+  "CREATE TABLE IF NOT EXISTS main.lineup_system (titleId TEXT PRIMARY KEY, concept TEXT, setbits INTEGER, clearbits " \
+  "INTEGER, home INTEGER, visible INTEGER);" \
+  "CREATE TABLE IF NOT EXISTS info.lineup_system (titleId TEXT PRIMARY KEY, concept TEXT, setbits INTEGER, clearbits " \
+  "INTEGER);"
+
+// Inside a transaction, with appinfo.db attached as info: keeps `title`'s bits in lineup_system (visible 1 to keep it
+// shown), with `home` the tab bit it started on, and makes the triggers.
+static int keep_system(sqlite3* db, const char* title, const char* concept, int set, int clear, int home, int visible,
+                       char users[][16], int count) {
+  char sql[200];
+  if (sqlite3_exec(db, SYSTEM_TABLES, NULL, NULL, NULL) != SQLITE_OK) return -1;
+  snprintf(sql, sizeof sql, "INSERT OR REPLACE INTO main.lineup_system VALUES (?3, ?2, %d, %d, %d, %d)", set, clear, home,
+           visible);
+  if (run_values(db, sql, 0, concept, title) < 0) return -1;
+  snprintf(sql, sizeof sql, "INSERT OR REPLACE INTO info.lineup_system VALUES (?3, ?2, %d, %d)", set, clear);
+  if (run_values(db, sql, 0, concept, title) < 0) return -1;
+  return system_triggers(db, users, count, 1) < 0 ? -1 : 0;
+}
+
+// Inside a transaction, with appinfo.db attached as info: lets go of `title`; the last one takes the tables and
+// triggers.
+static int forget_system(sqlite3* db, const char* title) {
+  if (!has_object_in(db, "main", "lineup_system")) return 0;
+  if (run_title(db, "DELETE FROM main.lineup_system WHERE titleId = ?1", NULL, title) < 0 ||
+      (has_object_in(db, "info", "lineup_system") &&
+       run_title(db, "DELETE FROM info.lineup_system WHERE titleId = ?1", NULL, title) < 0)) return -1;
+  int left = finds_row(db, "SELECT 1 FROM main.lineup_system LIMIT 1", NULL);
+  return left < 0 ? -1 : left ? 0 : drop_system(db);
+}
+
+// The home bit lineup_system keeps for `title`, or `otherwise`.
+static int system_home(sqlite3* db, const char* title, int otherwise) {
+  if (!has_object_in(db, "main", "lineup_system")) return otherwise;
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, "SELECT home FROM main.lineup_system WHERE titleId = ?", -1, &statement, NULL) != SQLITE_OK)
+    return otherwise;
+  sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
+  int home = sqlite3_step(statement) == SQLITE_ROW ? sqlite3_column_int(statement, 0) : otherwise;
+  sqlite3_finalize(statement);
+  return home;
+}
+
+// Opens app.db for a system tile's change: reads `title`, its profiles and backs up both databases, then begins.
+// Returns the database, or NULL with *status and `message` set.
+static sqlite3* begin_system(const char* title, long long* location, char* concept, size_t concept_size,
+                             char users[][16], int* count, char* backup, size_t backup_size, char* message,
+                             size_t message_size, int* status) {
+  *status = 500;
+  sqlite3* db = open_db(1);
+  if (!db) { snprintf(message, message_size, "Could not open the home screen database."); return NULL; }
+  int found = system_tile(db, title, location, concept, concept_size);
+  if (found <= 0) {
+    if (found < 0) snprintf(message, message_size, "Could not read the tile (%s).", sqlite3_errmsg(db));
+    else { snprintf(message, message_size, "No such tile."); *status = 404; }
+  } else if ((*count = icon_users(db, users)) < 0) {
+    snprintf(message, message_size, "Could not read the profiles (%s).", sqlite3_errmsg(db));
+  } else if (!check_and_backup(db, backup, backup_size, message, message_size) &&
+             !attach_appinfo(db, message, message_size) && !backup_appinfo(db, backup, message, message_size)) {
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK) return db;
+    snprintf(message, message_size, "The database is busy (%s). Try again.", sqlite3_errmsg(db));
+  }
+  sqlite3_close(db);
+  return NULL;
+}
+
+// Commits a system tile's change begun by begin_system, or rolls it back. Returns the HTTP status.
+static int end_system(sqlite3* db, int failed, char* message, size_t message_size) {
+  if (failed || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+    snprintf(message, message_size, "The write failed (%s). Nothing changed.", sqlite3_errmsg(db));
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_close(db);
+    return 500;
+  }
+  sqlite3_close(db);
+  return 200;
+}
+
+// Moves system tile `title` (the Media Gallery) to the Media tab or back to Games, on every profile,
+// after backing up both databases. Returns the HTTP status; `message` explains a failure.
+static int move_system(const char* title, int media, char* backup, size_t backup_size, char* message,
+                       size_t message_size) {
+  if (!is_system_movable(title)) { snprintf(message, message_size, "Only the Media Gallery moves."); return 400; }
+  static char users[MAX_GAMES][16];
+  char concept[96] = "";
+  long long location = 0;
+  int count = 0, status, bit = media ? BIT_MEDIA : BIT_GAMES;
+  sqlite3* db = begin_system(title, &location, concept, sizeof concept, users, &count, backup, backup_size, message,
+                             message_size, &status);
+  if (!db) return status;
+  int from = tab_bit(location);
+  if (from != (media ? BIT_GAMES : BIT_MEDIA)) {
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_close(db);
+    snprintf(message, message_size, "That tile changed since it was read. Open it again.");
+    return 409;
+  }
+  int home = system_home(db, title, from);
+  int failed = (home == bit ? forget_system(db, title)
+                            : keep_system(db, title, concept, bit, 6 - bit, home, 0, users, count)) ||
+               write_system(db, title, concept, bit, 6 - bit, 6 - bit, users, count);
+  // A pin is a place on the tab the tile just left.
+  for (int i = 0; !failed && i < count; ++i) failed = forget_pin(db, users[i], title);
+  return end_system(db, failed, message, message_size);
+}
+
+// Shows Welcome on every profile, or hides it again as the system had it, after backing up both databases. Returns
+// the HTTP status; `message` explains a failure.
+static int show_welcome(int show, char* backup, size_t backup_size, char* message, size_t message_size) {
+  static char users[MAX_GAMES][16];
+  char concept[96] = "";
+  long long location = 0;
+  int count = 0, status;
+  sqlite3* db = begin_system(WELCOME_TITLE, &location, concept, sizeof concept, users, &count, backup, backup_size,
+                             message, message_size, &status);
+  if (!db) return status;
+  int kept = finds_row(db, has_object_in(db, "main", "lineup_system")
+                       ? "SELECT 1 FROM main.lineup_system WHERE titleId = '" WELCOME_TITLE "'" : "SELECT 1 WHERE 0", NULL);
+  if (kept < 0 || kept == show || !tab_bit(location)) {
+    sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    sqlite3_close(db);
+    if (kept < 0) { snprintf(message, message_size, "Could not read the tile."); return 500; }
+    snprintf(message, message_size, !tab_bit(location) ? "The system keeps Welcome off both tabs here."
+             : show ? "Welcome is already shown." : "Lineup did not show Welcome.");
+    return 409;
+  }
+  int failed = show ? keep_system(db, WELCOME_TITLE, concept, 0, BIT_HIDDEN, 0, 1, users, count) ||
+                      write_system(db, WELCOME_TITLE, concept, 0, BIT_HIDDEN, BIT_HIDDEN, users, count) ||
+                      system_visible(db, WELCOME_TITLE, 1, users, count)
+                    : forget_system(db, WELCOME_TITLE) ||
+                      write_system(db, WELCOME_TITLE, concept, BIT_HIDDEN, 0, BIT_GAMES | BIT_MEDIA, users, count) ||
+                      system_visible(db, WELCOME_TITLE, 0, users, count);
+  return end_system(db, failed, message, message_size);
+}
+
+// 1 when a kept tile is off its bits or visible in some place, its JSON included; 0 when not, -1 on failure.
+// appinfo.db is attached as info.
+static int system_stale(sqlite3* db, char users[][16], int count) {
+  for (int p = 0; p < SYSTEM_PLACE_COUNT; ++p)
+    for (int u = 0; u < (p < SYSTEM_SHARED ? 1 : count); ++u) {
+      const SystemPlace* place = &SYSTEM_PLACES[p];
+      char table[64], where[64];
+      static char sql[512];
+      if (!system_place_ready(db, place, p < SYSTEM_SHARED ? "" : users[u], table, sizeof table)) continue;
+      field_condition(place, "x.", where, sizeof where);
+      snprintf(sql, sizeof sql, "SELECT 1 FROM %1$s.%2$s x JOIN %1$s.lineup_system s ON s.%3$s = x.%4$s WHERE %5$s"
+               "(CAST(x.%6$s AS INTEGER) & s.clearbits) <> 0 LIMIT 1", place->schema, table, place->by, place->key,
+               where, place->value);
+      int found = finds_row(db, sql, NULL);
+      if (!found && p == SYSTEM_ICON && has_column(db, "main", table, "visible")) {
+        snprintf(sql, sizeof sql, "SELECT 1 FROM %s x JOIN main.lineup_system s ON s.titleId = x.titleId WHERE "
+                 "s.visible = 1 AND x.visible = 0 LIMIT 1", table);
+        found = finds_row(db, sql, NULL);
+      }
+      if (found) return found;
+    }
+  int found = 0;
+  if (has_column(db, "main", "tbl_contentinfo", "AppInfoJson"))
+    found = finds_row(db, "SELECT 1 FROM tbl_contentinfo c JOIN main.lineup_system s ON s.titleId = c.titleId WHERE "
+                      "json_valid(c.AppInfoJson) AND json_type(c.AppInfoJson, '$.DISPLAYLOCATION') IS NOT NULL AND "
+                      "c.AppInfoJson ->> '$.DISPLAYLOCATION' IS NOT c.dispLocation LIMIT 1", NULL);
+  if (!found && has_column(db, "main", "tbl_conceptmetadata", "ConceptInfoJson"))
+    found = finds_row(db, "SELECT 1 FROM tbl_conceptmetadata x JOIN main.lineup_system s ON s.concept = x.localConceptId "
+                      "JOIN json_each(" SAFE_JSON("x.ConceptInfoJson") ", '$.field_list') e WHERE "
+                      "json_valid(x.ConceptInfoJson) AND e.value ->> '$.key' = 'display_location' AND "
+                      "e.value ->> '$.data' IS NOT x.dispLocation LIMIT 1", NULL);
+  return found;
+}
+
+// When Lineup starts: puts a tile an earlier test build moved, and that no longer moves (the PS Store), back on the
+// tab it started on, and lets go of it, after a backup. Returns how many it put back, or -1.
+static int release_unmovable(void) {
+  sqlite3* db = open_db(1);
+  if (!db) return -1;
+  if (!has_object(db, "lineup_system")) { sqlite3_close(db); return 0; }
+  static char users[MAX_GAMES][16], titles[8][16], concepts[8][96];
+  static int homes[8];
+  char backup[256] = "", message[300] = "";
+  int count = icon_users(db, users), tiles = 0;
+  sqlite3_stmt* statement;
+  int failed = count < 0 || sqlite3_prepare_v2(db, "SELECT titleId, ifnull(concept, ''), home FROM main.lineup_system "
+                                               "WHERE titleId NOT IN ('" GALLERY_TITLE "', '" WELCOME_TITLE "')", -1,
+                                               &statement, NULL) != SQLITE_OK;
+  while (!failed && tiles < 8 && sqlite3_step(statement) == SQLITE_ROW) {
+    snprintf(titles[tiles], sizeof titles[0], "%s", (const char*)sqlite3_column_text(statement, 0));
+    snprintf(concepts[tiles], sizeof concepts[0], "%s", (const char*)sqlite3_column_text(statement, 1));
+    homes[tiles++] = sqlite3_column_int(statement, 2);
+  }
+  if (count >= 0 && !failed) sqlite3_finalize(statement);
+  if (!failed && tiles) {
+    failed = attach_appinfo(db, message, sizeof message) ||
+             check_and_backup(db, backup, sizeof backup, message, sizeof message) ||
+             backup_appinfo(db, backup, message, sizeof message) ||
+             sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK;
+    for (int i = 0; !failed && i < tiles; ++i) {
+      int home = homes[i];
+      failed = forget_system(db, titles[i]) ||
+               ((home == BIT_GAMES || home == BIT_MEDIA) &&
+                write_system(db, titles[i], concepts[i], home, 6 - home, 6 - home, users, count));
+    }
+    if (failed || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+      LOG("tiles that no longer move not put back: %s", *message ? message : sqlite3_errmsg(db));
+      sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+      failed = 1;
+    } else LOG("tiles that no longer move put back: %d, backup %s", tiles, backup);
+  }
+  sqlite3_close(db);
+  return failed ? -1 : tiles;
+}
+
+// When Lineup starts: writes the kept system tiles again wherever the triggers could not (the JSON, a profile made
+// since, a write while they were missing), and gives every place its triggers, after a backup. Returns how many tiles
+// it wrote, or -1.
+static int restore_system(void) {
+  sqlite3* db = open_db(1);
+  if (!db) return -1;
+  if (!has_object(db, "lineup_system")) { sqlite3_close(db); return 0; }
+  static char users[MAX_GAMES][16], titles[8][16], concepts[8][96];
+  static int sets[8], clears[8], shown[8];
+  char backup[256] = "", message[300] = "";
+  int count = icon_users(db, users), tiles = 0;
+  int failed = count < 0 || attach_appinfo(db, message, sizeof message);
+  int stale = failed ? 0 : system_stale(db, users, count);
+  int missing = failed || stale < 0 ? 0 : system_triggers(db, users, count, 0);
+  failed = failed || stale < 0 || missing < 0;
+  if (!failed && (stale || missing)) {
+    sqlite3_stmt* statement;
+    failed = sqlite3_prepare_v2(db, "SELECT titleId, ifnull(concept, ''), setbits, clearbits, ifnull(visible, 0) FROM "
+                                "main.lineup_system", -1, &statement, NULL) != SQLITE_OK;
+    while (!failed && tiles < 8 && sqlite3_step(statement) == SQLITE_ROW) {
+      snprintf(titles[tiles], sizeof titles[0], "%s", (const char*)sqlite3_column_text(statement, 0));
+      snprintf(concepts[tiles], sizeof concepts[0], "%s", (const char*)sqlite3_column_text(statement, 1));
+      sets[tiles] = sqlite3_column_int(statement, 2);
+      clears[tiles] = sqlite3_column_int(statement, 3);
+      shown[tiles++] = sqlite3_column_int(statement, 4);
+    }
+    if (!failed) sqlite3_finalize(statement);
+    failed = failed || check_and_backup(db, backup, sizeof backup, message, sizeof message) ||
+             backup_appinfo(db, backup, message, sizeof message) ||
+             sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK ||
+             system_triggers(db, users, count, 1) < 0;
+    for (int i = 0; !failed && i < tiles; ++i) {
+      // Only what Lineup writes: a tab, or Welcome shown.
+      int known = (sets[i] == BIT_GAMES && clears[i] == BIT_MEDIA) || (sets[i] == BIT_MEDIA && clears[i] == BIT_GAMES) ||
+                  (sets[i] == 0 && clears[i] == BIT_HIDDEN);
+      failed = !known || write_system(db, titles[i], concepts[i], sets[i], clears[i], clears[i], users, count) ||
+               (shown[i] && system_visible(db, titles[i], 1, users, count));
+    }
+    if (failed || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+      LOG("system tiles not restored: %s", *message ? message : sqlite3_errmsg(db));
+      sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+      failed = 1;
+    } else LOG("system tiles restored: %d, backup %s", tiles, backup);
+  } else if (failed) LOG("system tiles not checked: %s", *message ? message : sqlite3_errmsg(db));
+  sqlite3_close(db);
+  return failed ? -1 : stale || missing ? tiles : 0;
+}
+
 // Puts the moved apps back on their tab wherever the triggers could not (AppInfoJson, a profile created after the
 // move, a write while they were missing), and gives every profile its triggers, after a backup. Returns how many apps
 // it changed, or -1.
@@ -1065,6 +1804,37 @@ static int restore_moved(void) {
       putf(&sql, " OR EXISTS (SELECT 1 FROM tbl_iconinfo_%s i WHERE i.titleId = m.titleId AND i.dispLocation IN (138, 188) "
            "AND i.dispLocation <> m.tab)",
            users[i]);
+    // The concept places. Apps moved before Lineup kept them (1.8.0) are all written again once, which records them.
+    if (!has_object_in(db, "main", "lineup_moved_concept") || !has_object_in(db, "info", "lineup_moved_concept")) {
+      puts_(&sql, " OR 1");
+    } else {
+      if (has_column(db, "main", "tbl_contentinfo", "localConceptId"))
+        puts_(&sql, " OR (NOT EXISTS (SELECT 1 FROM lineup_moved_concept k WHERE k.titleId = m.titleId) AND "
+              "ifnull(c.localConceptId, '') <> '' AND NOT EXISTS (SELECT 1 FROM tbl_contentinfo o WHERE "
+              "o.localConceptId = c.localConceptId AND o.titleId <> c.titleId))");
+      if (has_columns(db, "main", "tbl_conceptmetadata", CONCEPT_META_COLUMNS)) {
+        puts_(&sql, " OR EXISTS (SELECT 1 FROM lineup_moved_concept k JOIN tbl_conceptmetadata x ON x.localConceptId = "
+              "k.concept WHERE k.titleId = m.titleId AND x.dispLocation IN (138, 188) AND x.dispLocation <> m.tab)");
+        if (has_column(db, "main", "tbl_conceptmetadata", "ConceptInfoJson"))
+          puts_(&sql, " OR EXISTS (SELECT 1 FROM lineup_moved_concept k JOIN tbl_conceptmetadata x ON x.localConceptId = "
+                "k.concept AND json_valid(x.ConceptInfoJson) JOIN json_each(" SAFE_JSON("x.ConceptInfoJson") ", '$.field_list') e WHERE "
+                "k.titleId = m.titleId AND e.value ->> '$.key' = 'display_location' AND e.value ->> '$.data' IS NOT "
+                "x.dispLocation)");
+      }
+      if (has_columns(db, "info", "tbl_conceptinfo", CONCEPT_INFO_COLUMNS))
+        puts_(&sql, " OR EXISTS (SELECT 1 FROM lineup_moved_concept k JOIN info.tbl_conceptinfo x ON x.local_concept_id = "
+              "k.concept AND x.key = 'display_location' WHERE k.titleId = m.titleId AND x.val IS NOT m.tab)");
+      for (int i = 0; i < count; ++i) {
+        char table[64];
+        snprintf(table, sizeof table, "tbl_concepticoninfo_%s", users[i]);
+        char clause[512];  // longer than putf's line
+        if (has_columns(db, "main", table, CONCEPT_ICON_COLUMNS) &&
+            snprintf(clause, sizeof clause, " OR EXISTS (SELECT 1 FROM lineup_moved_concept k JOIN %s x ON "
+                     "x.localConceptId = k.concept WHERE k.titleId = m.titleId AND x.dispLocation IN (1162, 2236) AND "
+                     "x.dispLocation <> " CONCEPT_OF("m.tab") ")", table) < (int)sizeof clause)
+          puts_(&sql, clause);
+      }
+    }
     sqlite3_stmt* statement;
     failed = !sql.data || sqlite3_prepare_v2(db, sql.data, -1, &statement, NULL) != SQLITE_OK;
     int step = SQLITE_DONE;
@@ -1076,18 +1846,24 @@ static int restore_moved(void) {
       failed = step != SQLITE_ROW && step != SQLITE_DONE;
       sqlite3_finalize(statement);
     }
-    char triggers[300];
-    snprintf(triggers, sizeof triggers, "SELECT 1 WHERE (SELECT COUNT(*) FROM main.sqlite_master WHERE type = 'trigger' AND "
-             "name GLOB 'lineup_move_*') + (SELECT COUNT(*) FROM info.sqlite_master WHERE type = 'trigger' AND name GLOB "
-             "'lineup_move_*') = %d", 4 + 2 * count);
+    // The concept triggers (lineup_move_k*) and the system tiles' (lineup_move_sys_*) are counted apart.
+#define FIRST_MOVE_TRIGGERS "type = 'trigger' AND name GLOB 'lineup_move_*' AND name NOT GLOB 'lineup_move_k*' AND " \
+  "name NOT GLOB 'lineup_move_sys_*'"
+    char triggers[400];
+    snprintf(triggers, sizeof triggers, "SELECT 1 WHERE (SELECT COUNT(*) FROM main.sqlite_master WHERE "
+             FIRST_MOVE_TRIGGERS ") + (SELECT COUNT(*) FROM info.sqlite_master WHERE " FIRST_MOVE_TRIGGERS ") = %d",
+             4 + 2 * count);
     complete = failed ? 0 : finds_row(db, triggers, NULL);
-    failed = failed || complete < 0;
+    int concepts = failed || complete < 0 ? 0 : concept_triggers(db, users, count, 0);
+    failed = failed || complete < 0 || concepts < 0;
+    if (concepts > 0) complete = 0;
   }
   if (!failed && (stale || !complete)) {
     failed = check_and_backup(db, backup, sizeof backup, message, sizeof message) ||
              backup_appinfo(db, backup, message, sizeof message) ||
              sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK || ensure_moves(db, users, count);
-    for (int i = 0; !failed && i < stale; ++i) failed = write_move(db, titles[i], tabs[i], users, count);
+    for (int i = 0; !failed && i < stale; ++i)
+      failed = record_concept(db, titles[i], tabs[i]) || write_move(db, titles[i], tabs[i], users, count);
     if (failed || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
       LOG("moved apps not restored: %s", *message ? message : sqlite3_errmsg(db));
       sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
@@ -1109,14 +1885,16 @@ static int unpin(const char* user, char* backup, size_t backup_size, char* messa
   if (user && !table_exists(db, user)) { snprintf(message, message_size, "No such profile."); status = 404; goto done; }
   // Nothing to remove: no backup either.
   if (user && !has_object(db, "lineup_pin")) { status = 200; goto done; }
-  int moves = !user && has_object(db, "lineup_moved");
+  int moves = !user && has_object(db, "lineup_moved"), tiles = !user && has_object(db, "lineup_system");
   if (check_and_backup(db, backup, backup_size, message, message_size) ||
-      (moves && (attach_appinfo(db, message, message_size) || backup_appinfo(db, backup, message, message_size)))) goto done;
+      ((moves || tiles) && (attach_appinfo(db, message, message_size) ||
+                            backup_appinfo(db, backup, message, message_size)))) goto done;
   if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
     snprintf(message, message_size, "The database is busy (%s). Try again.", sqlite3_errmsg(db));
     goto done;
   }
-  if ((user ? drop_pin_triggers(db, user) || forget_pins(db, user) || remove_pins_if_unused(db) : show_all(db) || remove_pins(db) || (moves && drop_moves(db))) ||
+  if ((user ? drop_pin_triggers(db, user) || forget_pins(db, user) || remove_pins_if_unused(db)
+            : show_all(db) || remove_pins(db) || (moves && drop_moves(db)) || (tiles && drop_system(db))) ||
       sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
     snprintf(message, message_size, "The write failed (%s). Nothing changed.", sqlite3_errmsg(db));
     sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
@@ -1407,6 +2185,122 @@ static int write_report(char* path, size_t path_size, char* message, size_t mess
   return 200;
 }
 
+// ---- TabShifter's leftovers ----
+//
+// TabShifter put a "TS" launcher tile, TBSH00001, into the home screen's databases and three folders of its own, and
+// it stays after TabShifter is deleted. Removing it takes every row of that title and its concept (cid:local:TBSH00001)
+// out of both databases, after a backup of each, in one transaction, then the folders. Its nsx_content_flag_* rows
+// in tbl_info_<user> stay: the system writes rows of that name too, so TabShifter's cannot be told from them.
+#define TABSHIFTER_TITLE "TBSH00001"
+#define TABSHIFTER_CONCEPT "cid:local:" TABSHIFTER_TITLE
+
+static const char* const tabshifter_dirs[] = {"/user/app/" TABSHIFTER_TITLE, "/user/appmeta/" TABSHIFTER_TITLE,
+                                              "/system_data/priv/appmeta/" TABSHIFTER_TITLE};
+
+// Deletes the rows of `schema`.`table` whose `column` is `value`, when the table has that column. Returns the rows
+// deleted, or -1.
+static int delete_where(sqlite3* db, const char* schema, const char* table, const char* column, const char* value) {
+  if (!has_column(db, schema, table, column)) return 0;
+  char sql[200];
+  snprintf(sql, sizeof sql, "DELETE FROM %s.\"%s\" WHERE \"%s\" = ?2", schema, table, column);
+  return run_values(db, sql, 0, value, NULL);
+}
+
+// The rows of TabShifter's tile in both databases, or -1. appinfo.db is attached as info.
+static int tabshifter_rows(sqlite3* db, char users[][16], int count) {
+  static const char* const places[][3] = {
+    {"main", "tbl_contentinfo", "titleId"}, {"main", "tbl_conceptmetadata", "localConceptId"},
+    {"info", "tbl_appinfo", "titleId"}, {"info", "tbl_conceptinfo", "local_concept_id"},
+  };
+  int total = 0;
+  for (int i = 0; i < 4; ++i) {
+    if (!has_column(db, places[i][0], places[i][1], places[i][2])) continue;
+    char sql[200];
+    snprintf(sql, sizeof sql, "SELECT COUNT(*) FROM %s.%s WHERE %s IN ('" TABSHIFTER_TITLE "', '" TABSHIFTER_CONCEPT
+             "')", places[i][0], places[i][1], places[i][2]);
+    sqlite3_stmt* statement;
+    if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) return -1;
+    if (sqlite3_step(statement) == SQLITE_ROW) total += sqlite3_column_int(statement, 0);
+    sqlite3_finalize(statement);
+  }
+  for (int i = 0; i < count; ++i) {
+    char table[64], sql[200];
+    snprintf(table, sizeof table, "tbl_iconinfo_%s", users[i]);
+    if (!has_column(db, "main", table, "titleId")) continue;
+    snprintf(sql, sizeof sql, "SELECT 1 FROM %s WHERE titleId = '" TABSHIFTER_TITLE "'", table);
+    int found = finds_row(db, sql, NULL);
+    if (found < 0) return -1;
+    total += found;
+  }
+  return total;
+}
+
+// Removes TabShifter's tile, after backing up both databases. `removed` gets the rows taken out. Returns the HTTP
+// status; `message` explains a failure.
+static int remove_tabshifter(int* removed, char* backup, size_t backup_size, char* message, size_t message_size) {
+  *removed = 0;
+  sqlite3* db = open_db(1);
+  if (!db) { snprintf(message, message_size, "Could not open the home screen database."); return 500; }
+  int status = 500, began = 0, failed = 0;
+  static char users[MAX_GAMES][16];
+  int count = icon_users(db, users);
+  if (count < 0) { snprintf(message, message_size, "Could not read the profiles (%s).", sqlite3_errmsg(db)); goto done; }
+  if (attach_appinfo(db, message, message_size)) goto done;
+  int rows = tabshifter_rows(db, users, count);
+  if (rows < 0) { snprintf(message, message_size, "Could not read the databases (%s).", sqlite3_errmsg(db)); goto done; }
+  if (rows) {
+    if (check_and_backup(db, backup, backup_size, message, message_size) ||
+        backup_appinfo(db, backup, message, message_size)) goto done;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+      snprintf(message, message_size, "The database is busy (%s). Try again.", sqlite3_errmsg(db));
+      goto done;
+    }
+    began = 1;
+    const char* const shared[][3] = {
+      {"main", "tbl_contentinfo", "titleId"}, {"main", "tbl_conceptmetadata", "localConceptId"},
+      {"info", "tbl_appinfo", "titleId"}, {"info", "tbl_conceptinfo", "local_concept_id"},
+    };
+    for (int i = 0; !failed && i < 4; ++i) {
+      int title = delete_where(db, shared[i][0], shared[i][1], shared[i][2], TABSHIFTER_TITLE);
+      int concept = title < 0 ? -1 : delete_where(db, shared[i][0], shared[i][1], shared[i][2], TABSHIFTER_CONCEPT);
+      failed = title < 0 || concept < 0;
+      if (!failed) *removed += title + concept;
+    }
+    for (int i = 0; !failed && i < count; ++i) {
+      char icon[64], concept[64], group[64];
+      snprintf(icon, sizeof icon, "tbl_iconinfo_%s", users[i]);
+      snprintf(concept, sizeof concept, "tbl_concepticoninfo_%s", users[i]);
+      snprintf(group, sizeof group, "tbl_group_%s", users[i]);
+      const char* const places[][2] = {{icon, "titleId"}, {concept, "localConceptId"}, {concept, "primaryTitleId"},
+                                       {group, "itemId"}};
+      const char* const values[] = {TABSHIFTER_TITLE, TABSHIFTER_CONCEPT, TABSHIFTER_TITLE, TABSHIFTER_TITLE};
+      for (int j = 0; !failed && j < 4; ++j) {
+        int changed = delete_where(db, "main", places[j][0], places[j][1], values[j]);
+        failed = changed < 0;
+        if (!failed) *removed += changed;
+      }
+      // Lineup's own rows of it, a pin or a hiding, go too.
+      if (!failed && has_object(db, "lineup_pin")) failed = forget_pin(db, users[i], TABSHIFTER_TITLE);
+    }
+    if (!failed && has_object(db, "lineup_hidden"))
+      failed = delete_where(db, "main", "lineup_hidden", "titleId", TABSHIFTER_TITLE) < 0;
+    if (failed || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+      snprintf(message, message_size, "The write failed (%s). Nothing changed.", sqlite3_errmsg(db));
+      *removed = 0;
+      goto done;
+    }
+    began = 0;
+  }
+  // The folders, once no row points at them.
+  for (int i = 0; i < 3; ++i)
+    if (remove_tree(tabshifter_dirs[i])) LOG("could not remove %s: %s", tabshifter_dirs[i], strerror(errno));
+  status = 200;
+done:
+  if (began) sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+  sqlite3_close(db);
+  return status;
+}
+
 #ifndef LINEUPD_TEST
 
 // ---- HTTP ----
@@ -1506,7 +2400,7 @@ static void get_row(int socket, const char* user, int media) {
     struct stat info;
     icon_path(db, rows[i].title, path, sizeof path);
     icons[i] = stat(path, &info) ? 0 : (long long)info.st_mtime;
-    movable[i] = is_movable(db, rows[i].title);
+    movable[i] = is_movable(db, rows[i].title) || !strcmp(rows[i].title, GALLERY_TITLE);
   }
   const char* pins = read_pins(db, user, rows, count < 0 ? 0 : count, slots);
   sqlite3_close(db);
@@ -1550,10 +2444,49 @@ static void get_hidden(int socket, const char* user) {
     }
     sqlite3_finalize(statement);
   }
+  // The system's tiles Lineup manages on this profile: those showing (which can hide), and the PS Store, the Media
+  // Gallery and Welcome whatever their state. tab is games, media or none (off both); shown, that Lineup shows it.
+  puts_(&body, "],\"system\":[");
+  char tiles[700];
+  int content = has_column(db, "main", "tbl_contentinfo", "dispLocation");
+  int kept = has_object_in(db, "main", "lineup_system");
+  snprintf(tiles, sizeof tiles, "SELECT i.titleId, ifnull(i.titleName, i.titleId), i.visible, %s, %s FROM "
+           "tbl_iconinfo_%s i WHERE i.titleId GLOB 'NPXS*' AND i.titleId NOT IN ('" GAME_LIBRARY_TITLE "', '"
+           APP_LIBRARY_TITLE "') AND (i.visible = 1 OR i.titleId IN ('" STORE_TITLE "', '" GALLERY_TITLE "', '"
+           WELCOME_TITLE "')) ORDER BY i.titleName",
+           content ? "ifnull((SELECT c.dispLocation FROM tbl_contentinfo c WHERE c.titleId = i.titleId), i.dispLocation)"
+                   : "i.dispLocation",
+           kept ? "EXISTS (SELECT 1 FROM lineup_system s WHERE s.titleId = i.titleId AND s.visible = 1)" : "0", user);
+  if (sqlite3_prepare_v2(db, tiles, -1, &statement, NULL) == SQLITE_OK) {
+    for (int row = 0; sqlite3_step(statement) == SQLITE_ROW; ++row) {
+      int bit = tab_bit(sqlite3_column_int64(statement, 3));
+      puts_(&body, row ? ",{\"titleId\":" : "{\"titleId\":");
+      put_json_string(&body, (const char*)sqlite3_column_text(statement, 0));
+      puts_(&body, ",\"name\":");
+      put_json_string(&body, (const char*)sqlite3_column_text(statement, 1));
+      putf(&body, ",\"tab\":\"%s\",\"visible\":%s,\"shown\":%s}",
+           bit == BIT_GAMES ? "games" : bit == BIT_MEDIA ? "media" : "none",
+           sqlite3_column_int(statement, 2) == 1 ? "true" : "false", sqlite3_column_int(statement, 4) ? "true" : "false");
+    }
+    sqlite3_finalize(statement);
+  }
   sqlite3_close(db);
   puts_(&body, "]}");
   respond_json(socket, 200, &body);
   free(body.data);
+}
+
+static void post_tabshifter(int socket) {
+  char backup[256] = "", message[300] = "";
+  int removed = 0, status = remove_tabshifter(&removed, backup, sizeof backup, message, sizeof message);
+  if (status != 200) { respond_error(socket, status, message); return; }
+  LOG("TabShifter's tile: %d rows removed, backup %s", removed, *backup ? backup : "none");
+  Buffer reply = {0};
+  putf(&reply, "{\"ok\":true,\"removed\":%d,\"backup\":", removed);
+  put_json_string(&reply, backup);
+  puts_(&reply, "}");
+  respond_json(socket, 200, &reply);
+  free(reply.data);
 }
 
 static void send_png(int socket, const char* path, const char* missing) {
@@ -1627,8 +2560,12 @@ static void post_app(int socket, const char* user, const char* title, const char
   char backup[256] = "", message[300] = "";
   int hide = !strcmp(action, "hide"), show = !strcmp(action, "show"), media = !strcmp(action, "media");
   if (!hide && !show && !media && strcmp(action, "games")) { respond_error(socket, 400, "action must be hide, show, games or media."); return; }
-  int status = hide || show ? set_hidden(user, title, hide, backup, sizeof backup, message, sizeof message)
-                            : move_app(title, media ? MEDIA_TAB : GAMES_TAB, backup, sizeof backup, message, sizeof message);
+  int welcome = !strcmp(title, WELCOME_TITLE);
+  if (welcome && !hide && !show) { respond_error(socket, 400, "Welcome shows or hides; it does not move."); return; }
+  int status = welcome ? show_welcome(show, backup, sizeof backup, message, sizeof message)
+             : hide || show ? set_hidden(user, title, hide, backup, sizeof backup, message, sizeof message)
+             : is_system_movable(title) ? move_system(title, media, backup, sizeof backup, message, sizeof message)
+             : move_app(title, media ? MEDIA_TAB : GAMES_TAB, backup, sizeof backup, message, sizeof message);
   if (status != 200) { respond_error(socket, status, message); return; }
   LOG("%s %s for %s, backup %s", action, title, user, backup);
   Buffer reply = {0};
@@ -2301,6 +3238,9 @@ static int handle(int socket) {
   } else if (post && !strcmp(target, "/report")) {
     if (!authorized) respond_error(socket, 403, "Missing the X-Lineup header.");
     else post_report(socket);
+  } else if (post && !strcmp(target, "/tabshifter/remove")) {
+    if (!authorized) respond_error(socket, 403, "Missing the X-Lineup header.");
+    else post_tabshifter(socket);
   } else if (get && !strncmp(target, "/icon/", 6)) {
     get_icon(socket, target + 6);
   } else if (get && !strncmp(target, "/avatar/", 8)) {
@@ -2376,9 +3316,13 @@ int main(void) {
     // database could hold the backup that long.
     if (!quit && !triggers_checked) {
       triggers_checked = 1;
+      // Both databases as they were, the first time this lineupd runs, before any of its checks writes.
+      backup_originals();
       update_pin_triggers();
       restore_hidden();
       restore_moved();
+      release_unmovable();
+      restore_system();
     }
     // After the answer is out: the app closes once it has it.
     if (update.pending && run_update()) {
@@ -2413,8 +3357,8 @@ static long long scalar(const char* sql) {
 
 // Runs `format` (a statement, %1$s the user and %2$s a title) as the system would, outside Lineup.
 static void run(const char* format, const char* user, const char* title) {
-  char sql[1024];
-  snprintf(sql, sizeof sql, format, user, title);
+  static char sql[4096];
+  assert(snprintf(sql, sizeof sql, format, user, title) < (int)sizeof sql);
   sqlite3* db = open_db(1);
   assert(db && sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK);
   sqlite3_close(db);
@@ -2660,7 +3604,7 @@ static void test_pins(void) {
   assert(set_hidden(one, "PPSA00005", 1, backup, sizeof backup, message, sizeof message) == 409);
   run("INSERT INTO tbl_iconinfo_%1$s (titleId, titleName, lastAccessIndex, visible, dispLocation) VALUES "
       "('NPXS40047','Store',1,1,146),('NPXS40037','Plus',1,0,147),('NPXS40071','Library',1,1,146)", one, "");
-  assert(set_hidden(one, "NPXS40071", 1, backup, sizeof backup, message, sizeof message) == 409);
+  assert(set_hidden(one, "NPXS40071", 1, backup, sizeof backup, message, sizeof message) == 400);
   assert(set_hidden(one, "NPXS40037", 0, backup, sizeof backup, message, sizeof message) == 409);
   assert(set_hidden(one, STORE_TITLE, 1, backup, sizeof backup, message, sizeof message) == 200);
   assert(scalar("SELECT COUNT(*) FROM lineup_hidden") == 2);
@@ -2670,6 +3614,8 @@ static void test_pins(void) {
   assert(!scalar("SELECT visible FROM tbl_iconinfo_0000000001 WHERE titleId = '" GALLERY_TITLE "'"));
   assert(set_hidden(one, GALLERY_TITLE, 0, backup, sizeof backup, message, sizeof message) == 200);
   assert(scalar("SELECT visible FROM tbl_iconinfo_0000000001 WHERE titleId = '" GALLERY_TITLE "'") == 1);
+  // The Gallery visible at 154 is on the Games row now; the system takes it off for the checks of the row below.
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 0 WHERE titleId = '%2$s'", one, GALLERY_TITLE);
   // The console brings a hidden app back with an update or a new row; the triggers take it away, and only it.
   const char* store_visible = "SELECT visible FROM tbl_iconinfo_0000000001 WHERE titleId = '" STORE_TITLE "'";
   run("UPDATE tbl_iconinfo_%1$s SET visible = 1 WHERE titleId = '%2$s'", one, STORE_TITLE);
@@ -2830,8 +3776,353 @@ static void test_pins(void) {
   assert(!scalar("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'lineup%'"));
 }
 
-// Self-check: lineupd-test [<copy of app.db> <userId>]. Reorders the copy (or a synthetic database), checks it,
-// restores it.
+static long long info_scalar(const char* sql) {
+  sqlite3* info;
+  sqlite3_stmt* statement;
+  assert(sqlite3_open(appinfo_path, &info) == SQLITE_OK);
+  assert(sqlite3_prepare_v2(info, sql, -1, &statement, NULL) == SQLITE_OK && sqlite3_step(statement) == SQLITE_ROW);
+  long long value = sqlite3_column_int64(statement, 0);
+  sqlite3_finalize(statement);
+  sqlite3_close(info);
+  return value;
+}
+
+// `sql` with %1$s the user and %2$s the title, as scalar.
+static long long scalar_of(const char* format, const char* user, const char* title) {
+  char sql[1024];
+  snprintf(sql, sizeof sql, format, user, title);
+  return scalar(sql);
+}
+
+// Every place of system tile `title` holds `location` (`concept` on tbl_concepticoninfo_<user>), JSON included.
+static void expect_system(const char* user, const char* title, int location, int concept) {
+  char sql[400];
+  assert(scalar_of("SELECT dispLocation FROM tbl_contentinfo WHERE titleId = '%2$s'", user, title) == location);
+  assert(scalar_of("SELECT AppInfoJson ->> '$.DISPLAYLOCATION' FROM tbl_contentinfo WHERE titleId = '%2$s'", user,
+                   title) == location);
+  assert(scalar_of("SELECT dispLocation FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, title) == location);
+  assert(scalar_of("SELECT dispLocation FROM tbl_concepticoninfo_%1$s WHERE localConceptId = 'cid:local:%2$s'", user,
+                   title) == concept);
+  assert(scalar_of("SELECT dispLocation FROM tbl_conceptmetadata WHERE localConceptId = 'cid:local:%2$s'", user,
+                   title) == location);
+  assert(scalar_of("SELECT e.value ->> '$.data' FROM tbl_conceptmetadata m, json_each(m.ConceptInfoJson, "
+                   "'$.field_list') e WHERE m.localConceptId = 'cid:local:%2$s' AND e.value ->> '$.key' = "
+                   "'display_location'", user, title) == location);
+  snprintf(sql, sizeof sql, "SELECT val FROM tbl_appinfo WHERE titleId = '%s' AND key = 'DISPLAYLOCATION'", title);
+  assert(info_scalar(sql) == location);
+  snprintf(sql, sizeof sql, "SELECT val FROM tbl_conceptinfo WHERE local_concept_id = 'cid:local:%s' AND key = "
+           "'display_location'", title);
+  assert(info_scalar(sql) == location);
+}
+
+static int integrity_ok(const char* path) {
+  sqlite3* db;
+  char check[128];
+  assert(sqlite3_open(path, &db) == SQLITE_OK);
+  int ok = !pragma_text(db, "PRAGMA integrity_check", check, sizeof check);
+  sqlite3_close(db);
+  return ok;
+}
+
+// A synthetic pair of databases with the console's columns for the PS Store, the Media Gallery, Game Library, App
+// Library, Game Compressor (moved to Media by another tool, its concept left on Games) and TabShifter's tile.
+static void make_system_databases(const char* user) {
+  unlink(db_path);
+  unlink(appinfo_path);
+  sqlite3* created;
+  assert(sqlite3_open(db_path, &created) == SQLITE_OK);
+  sqlite3_close(created);
+  run("CREATE TABLE tbl_iconinfo_%1$s (titleId TEXT, titleName TEXT, lastAccessIndex INTEGER, visible INTEGER, "
+      "dispLocation INTEGER, hubAppUri TEXT, localConceptId TEXT);"
+      "CREATE TABLE tbl_concepticoninfo_%1$s (localConceptId TEXT, primaryTitleId TEXT, dispLocation INTEGER, hubAppUri TEXT);"
+      "CREATE TABLE tbl_contentinfo (titleId TEXT, localConceptId TEXT, dispLocation INTEGER, categoryType INTEGER, "
+      "appType INTEGER, contentLocation INTEGER, is3rdPartyVideoApp INTEGER, pprHubAppUri TEXT, AppInfoJson TEXT);"
+      "CREATE TABLE tbl_conceptmetadata (localConceptId TEXT, dispLocation INTEGER, pprHubAppUri TEXT, ConceptInfoJson TEXT);"
+      "CREATE TABLE tbl_group_%1$s (itemId TEXT, groupName TEXT, type TEXT, idx INTEGER);"
+      "CREATE TABLE tbl_info_%1$s (key TEXT PRIMARY KEY, value TEXT);"
+      "INSERT INTO tbl_group_%1$s VALUES ('PPSA00001','MyHome','title',1),('NPXS40075','MyHome','title',2),"
+      "('NPXS40071','MyHome','title',3);"
+      "INSERT INTO tbl_info_%1$s VALUES ('nsx_content_flag_PPSA00001','{\"deleted\":true,\"pushed\":false}')",
+      user, "");
+  struct { const char* title; int location, concept, category; const char* hub; } tiles[] = {
+    {"NPXS40047", 146, 2194, 67108864, "pshome:gamestore"}, {"NPXS40075", 154, 2202, 67108864, "psmediagalleryhub:main"},
+    {"NPXS40071", 146, 2194, 67108864, "pslibraryhub:main?space=game"},
+    {"NPXS40139", 148, 2196, 67108864, "pslibraryhub:main?space=media"},
+    {"PSGC50001", 188, 1162, 0, "psmediahub:main?titleId=PSGC50001"},
+    {"TBSH00001", 188, 2236, 65536, "psmediahub:main?titleId=TBSH00001"},
+  };
+  for (size_t i = 0; i < sizeof tiles / sizeof tiles[0]; ++i) {
+    char sql[1800], info[700];
+    // Game Compressor's concept icon still holds its Games tab and hub, as on the console.
+    const char* concept_hub = !strcmp(tiles[i].title, "PSGC50001") ? "pshome:gamehub?titleId=PSGC50001" : tiles[i].hub;
+    snprintf(sql, sizeof sql,
+      "INSERT INTO tbl_iconinfo_%%1$s VALUES ('%1$s','%1$s',%7$d,1,%2$d,'%5$s','cid:local:%1$s');"
+      "INSERT INTO tbl_concepticoninfo_%%1$s VALUES ('cid:local:%1$s','%1$s',%3$d,'%6$s');"
+      "INSERT INTO tbl_contentinfo VALUES ('%1$s','cid:local:%1$s',%2$d,%4$d,0,2,0,'%5$s',"
+      "'{\"DISPLAYLOCATION\":%2$d,\"CATEGORY_TYPE\":%4$d,\"HUBAPP_URI\":\"%5$s\",\"SIZE\":9007199254740993}');"
+      "INSERT INTO tbl_conceptmetadata VALUES ('cid:local:%1$s',%2$d,'%5$s','{\"field_list\":[{\"data\":\"%1$s\","
+      "\"key\":\"concept_name\",\"size\":9,\"type\":2},{\"data\":%2$d,\"key\":\"display_location\",\"size\":8,\"type\":0}]}')",
+      tiles[i].title, tiles[i].location, tiles[i].concept, tiles[i].category, tiles[i].hub, concept_hub, (int)i + 1);
+    run(sql, user, "");
+    snprintf(info, sizeof info, "INSERT INTO tbl_appinfo VALUES ('%1$s','m','DISPLAYLOCATION',%2$d),"
+             "('%1$s','m','CATEGORY_TYPE',%3$d),('%1$s','m','HUBAPP_URI','%4$s');"
+             "INSERT INTO tbl_conceptinfo VALUES ('cid:local:%1$s','m','display_location',%2$d),"
+             "('cid:local:%1$s','m','hubapp_uri','%4$s')", tiles[i].title, tiles[i].location, tiles[i].category,
+             tiles[i].hub);
+    if (!i) run_info("CREATE TABLE tbl_appinfo (titleId TEXT, metaDataId TEXT, key INT, val);"
+                     "CREATE TABLE tbl_conceptinfo (local_concept_id TEXT, metadata_id TEXT, key INT, val);");
+    run_info(info);
+  }
+  run("INSERT INTO tbl_iconinfo_%1$s VALUES ('NPXS40063','Welcome',0,0,147,'pshome:explorehub','cid:local:NPXS40063');"
+      "INSERT INTO tbl_contentinfo VALUES ('NPXS40063','cid:local:NPXS40063',147,67108864,0,2,0,'pshome:explorehub',"
+      "'{\"DISPLAYLOCATION\":147}');"
+      "INSERT INTO tbl_conceptmetadata VALUES ('cid:local:NPXS40063',147,'pshome:explorehub','{\"field_list\":"
+      "[{\"data\":147,\"key\":\"display_location\",\"size\":8,\"type\":0}]}')", user, "");
+  run_info("INSERT INTO tbl_appinfo VALUES ('NPXS40063','m','DISPLAYLOCATION',147);"
+           "INSERT INTO tbl_conceptinfo VALUES ('cid:local:NPXS40063','m','display_location',147)");
+}
+
+// Every place of Welcome holds `location`, and its tile `visible` on `user`.
+static void expect_welcome(const char* user, int location, int visible) {
+  assert(scalar_of("SELECT dispLocation FROM tbl_contentinfo WHERE titleId = '%2$s'", user, WELCOME_TITLE) == location);
+  assert(scalar_of("SELECT AppInfoJson ->> '$.DISPLAYLOCATION' FROM tbl_contentinfo WHERE titleId = '%2$s'", user,
+                   WELCOME_TITLE) == location);
+  assert(scalar_of("SELECT dispLocation FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, WELCOME_TITLE) == location);
+  assert(scalar_of("SELECT visible FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, WELCOME_TITLE) == visible);
+  assert(scalar_of("SELECT dispLocation FROM tbl_conceptmetadata WHERE localConceptId = 'cid:local:%2$s'", user,
+                   WELCOME_TITLE) == location);
+  assert(info_scalar("SELECT val FROM tbl_appinfo WHERE titleId = 'NPXS40063' AND key = 'DISPLAYLOCATION'") == location);
+  assert(info_scalar("SELECT val FROM tbl_conceptinfo WHERE local_concept_id = 'cid:local:NPXS40063' AND key = "
+                     "'display_location'") == location);
+}
+
+// The titles of tab `location` on `user`, in home order, into `rows`. Returns how many.
+static int tab_rows(const char* user, int location, Row* rows) {
+  sqlite3* db = open_db(0);
+  int count = read_tab(db, user, location, rows, NULL, MAX_GAMES);
+  sqlite3_close(db);
+  return count;
+}
+
+// System tiles, the concept places of moved apps, TabShifter's tile and the first backups, on `user` of the databases
+// at db_path and appinfo_path: the synthetic ones, or copies of a console's.
+static void test_system(const char* user) {
+  char backup[256], message[300], path[300];
+  // The first start copies both databases aside once; a second start keeps that first copy.
+  assert(!system("rm -f /tmp/lineupd-test-backups/original-*"));
+  assert(!backup_originals());
+  snprintf(path, sizeof path, "%s/original-app.db", backup_dir);
+  assert(integrity_ok(path));
+  snprintf(path, sizeof path, "%s/original-appinfo.db", backup_dir);
+  assert(integrity_ok(path));
+  struct stat first, again;
+  assert(!stat(path, &first) && !backup_originals() && !stat(path, &again) && first.st_mtime == again.st_mtime);
+
+  // The libraries never move or hide.
+  assert(move_system("NPXS40071", 1, backup, sizeof backup, message, sizeof message) == 400);
+  assert(move_system("NPXS40139", 0, backup, sizeof backup, message, sizeof message) == 400);
+  assert(set_hidden(user, "NPXS40071", 1, backup, sizeof backup, message, sizeof message) == 400);
+  assert(set_hidden(user, "NPXS40139", 1, backup, sizeof backup, message, sizeof message) == 400);
+  assert(set_hidden(user, WELCOME_TITLE, 1, backup, sizeof backup, message, sizeof message) == 400);
+  assert(move_app("NPXS40071", MEDIA_TAB, backup, sizeof backup, message, sizeof message) != 200);
+
+  // The Store does not move; the Gallery to Media: one bit for the other, everywhere, each backup with appinfo.db's
+  // beside it.
+  expect_system(user, STORE_TITLE, 146, 2194);
+  assert(move_system(STORE_TITLE, 1, backup, sizeof backup, message, sizeof message) == 400);
+  assert(move_system(GALLERY_TITLE, 0, backup, sizeof backup, message, sizeof message) == 409);
+  assert(move_system(GALLERY_TITLE, 1, backup, sizeof backup, message, sizeof message) == 200);
+  snprintf(path, sizeof path, "%.*s.appinfo.db", (int)strlen(backup) - 3, backup);
+  assert(integrity_ok(backup) && integrity_ok(path));
+  expect_system(user, GALLERY_TITLE, 156, 2204);
+  expect_system(user, STORE_TITLE, 146, 2194);
+  assert(!scalar_of("SELECT COUNT(*) FROM tbl_group_%1$s WHERE itemId = '%2$s'", user, GALLERY_TITLE));
+  assert(move_system(GALLERY_TITLE, 1, backup, sizeof backup, message, sizeof message) == 409);
+  // A big number in the JSON comes through as it was written.
+  assert(scalar_of("SELECT instr(AppInfoJson, '9007199254740993') > 0 OR json_type(AppInfoJson, '$.SIZE') IS NULL "
+                   "FROM tbl_contentinfo WHERE titleId = '%2$s'", user, GALLERY_TITLE));
+
+  // The console writes the Gallery back on Games, in place or anew, as at a restart: the triggers keep it on Media.
+  run("UPDATE tbl_contentinfo SET dispLocation = 154 WHERE titleId = '%2$s';"
+      "UPDATE tbl_iconinfo_%1$s SET dispLocation = 154 WHERE titleId = '%2$s';"
+      "UPDATE tbl_concepticoninfo_%1$s SET dispLocation = 2202 WHERE localConceptId = 'cid:local:%2$s';"
+      "UPDATE tbl_conceptmetadata SET dispLocation = 154 WHERE localConceptId = 'cid:local:%2$s'", user, GALLERY_TITLE);
+  run_info("UPDATE tbl_appinfo SET val = 154 WHERE titleId = 'NPXS40075' AND key = 'DISPLAYLOCATION';"
+           "UPDATE tbl_conceptinfo SET val = 154 WHERE local_concept_id = 'cid:local:NPXS40075' AND key = 'display_location'");
+  assert(scalar_of("SELECT dispLocation FROM tbl_contentinfo WHERE titleId = '%2$s'", user, GALLERY_TITLE) == 156);
+  assert(scalar_of("SELECT dispLocation FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, GALLERY_TITLE) == 156);
+  assert(scalar_of("SELECT dispLocation FROM tbl_concepticoninfo_%1$s WHERE localConceptId = 'cid:local:%2$s'", user,
+                   GALLERY_TITLE) == 2204);
+  assert(info_scalar("SELECT val FROM tbl_appinfo WHERE titleId = 'NPXS40075' AND key = 'DISPLAYLOCATION'") == 156);
+  run("CREATE TEMP TABLE again AS SELECT * FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s';"
+      "DELETE FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'; UPDATE again SET dispLocation = 154;"
+      "INSERT INTO tbl_iconinfo_%1$s SELECT * FROM again", user, GALLERY_TITLE);
+  assert(scalar_of("SELECT dispLocation FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, GALLERY_TITLE) == 156);
+  // A tile the system takes off both tabs stays off; written on Games again, it goes back to Media.
+  run("UPDATE tbl_iconinfo_%1$s SET dispLocation = 1 WHERE titleId = '%2$s'", user, GALLERY_TITLE);
+  assert(scalar_of("SELECT dispLocation FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, GALLERY_TITLE) == 1);
+  run("UPDATE tbl_iconinfo_%1$s SET dispLocation = 154 WHERE titleId = '%2$s'", user, GALLERY_TITLE);
+  assert(scalar_of("SELECT dispLocation FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, GALLERY_TITLE) == 156);
+  // The JSON the triggers leave is put right when Lineup starts.
+  run("UPDATE tbl_contentinfo SET AppInfoJson = json_set(AppInfoJson, '$.DISPLAYLOCATION', 154) WHERE titleId = '%2$s'",
+      user, GALLERY_TITLE);
+  assert(restore_system() == 1 && restore_system() == 0);
+  expect_system(user, GALLERY_TITLE, 156, 2204);
+  // Hidden on Media, the Gallery stays hidden there; the Store hides on Games and stays there.
+  assert(set_hidden(user, GALLERY_TITLE, 1, backup, sizeof backup, message, sizeof message) == 200);
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 1, dispLocation = 154 WHERE titleId = '%2$s'", user, GALLERY_TITLE);
+  assert(!scalar_of("SELECT visible FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, GALLERY_TITLE));
+  assert(scalar_of("SELECT dispLocation FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, GALLERY_TITLE) == 156);
+  assert(set_hidden(user, GALLERY_TITLE, 0, backup, sizeof backup, message, sizeof message) == 200);
+  assert(set_hidden(user, STORE_TITLE, 1, backup, sizeof backup, message, sizeof message) == 200);
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 1 WHERE titleId = '%2$s'", user, STORE_TITLE);
+  assert(!scalar_of("SELECT visible FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, STORE_TITLE));
+  expect_system(user, STORE_TITLE, 146, 2194);
+  assert(set_hidden(user, STORE_TITLE, 0, backup, sizeof backup, message, sizeof message) == 200);
+  // A Store an earlier test build moved to Media goes back to Games when Lineup starts, and leaves lineup_system;
+  // the Gallery keeps its row.
+  run("INSERT INTO lineup_system VALUES ('%2$s','cid:local:%2$s',4,2,2,0);"
+      "UPDATE tbl_contentinfo SET dispLocation = 148 WHERE titleId = '%2$s';"
+      "UPDATE tbl_iconinfo_%1$s SET dispLocation = 148 WHERE titleId = '%2$s';"
+      "UPDATE tbl_concepticoninfo_%1$s SET dispLocation = 2196 WHERE localConceptId = 'cid:local:%2$s';"
+      "UPDATE tbl_conceptmetadata SET dispLocation = 148 WHERE localConceptId = 'cid:local:%2$s'", user, STORE_TITLE);
+  run_info("INSERT INTO lineup_system VALUES ('NPXS40047','cid:local:NPXS40047',4,2);"
+           "UPDATE tbl_appinfo SET val = 148 WHERE titleId = 'NPXS40047' AND key = 'DISPLAYLOCATION';"
+           "UPDATE tbl_conceptinfo SET val = 148 WHERE local_concept_id = 'cid:local:NPXS40047' AND key = 'display_location'");
+  assert(release_unmovable() == 1 && release_unmovable() == 0);
+  expect_system(user, STORE_TITLE, 146, 2194);
+  assert(!scalar("SELECT COUNT(*) FROM lineup_system WHERE titleId = 'NPXS40047'") &&
+         scalar("SELECT COUNT(*) FROM lineup_system") == 1);
+  assert(!info_scalar("SELECT COUNT(*) FROM lineup_system WHERE titleId = 'NPXS40047'"));
+
+  // An app another tool half moved to Media (Game Compressor: its concept left on Games): to Games and back to Media
+  // puts every place on Media, the concept ones too, and keeps it there.
+  const char* gc = "PSGC50001";
+  assert(move_app(gc, GAMES_TAB, backup, sizeof backup, message, sizeof message) == 200);
+  assert(!scalar("SELECT COUNT(*) FROM sqlite_master WHERE name GLOB 'lineup_moved*'"));
+  assert(move_app(gc, MEDIA_TAB, backup, sizeof backup, message, sizeof message) == 200);
+  assert(scalar("SELECT COUNT(*) FROM lineup_moved WHERE titleId = 'PSGC50001' AND tab = 188 AND home = 138") == 1);
+  const char* gc_concept = "SELECT COUNT(*) FROM tbl_concepticoninfo_%1$s WHERE localConceptId = 'cid:local:%2$s' AND "
+                           "dispLocation = 2236 AND hubAppUri = 'psmediahub:main?titleId=%2$s'";
+  const char* gc_meta = "SELECT COUNT(*) FROM tbl_conceptmetadata m, json_each(m.ConceptInfoJson, '$.field_list') e WHERE "
+                        "m.localConceptId = 'cid:local:%2$s' AND m.dispLocation = 188 AND m.pprHubAppUri = "
+                        "'psmediahub:main?titleId=%2$s' AND e.value ->> '$.key' = 'display_location' AND "
+                        "e.value ->> '$.data' = 188";
+  const char* gc_info = "SELECT group_concat(val, '|') FROM (SELECT val FROM tbl_conceptinfo WHERE local_concept_id = "
+                        "'cid:local:PSGC50001' AND key IN ('display_location', 'hubapp_uri') ORDER BY key)";
+  assert(scalar_of(gc_concept, user, gc) == 1 && scalar_of(gc_meta, user, gc) == 1);
+  assert(scalar_of("SELECT categoryType & 65536 FROM tbl_contentinfo WHERE titleId = '%2$s'", user, gc));
+  {
+    sqlite3* info;
+    sqlite3_stmt* statement;
+    assert(sqlite3_open(appinfo_path, &info) == SQLITE_OK);
+    assert(sqlite3_prepare_v2(info, gc_info, -1, &statement, NULL) == SQLITE_OK && sqlite3_step(statement) == SQLITE_ROW);
+    assert(!strcmp((const char*)sqlite3_column_text(statement, 0), "188|psmediahub:main?titleId=PSGC50001"));
+    sqlite3_finalize(statement);
+    sqlite3_close(info);
+  }
+  // Installed again as a game, as Game Compressor's payload does: every concept place comes back to Media too.
+  run("UPDATE tbl_concepticoninfo_%1$s SET dispLocation = 1162, hubAppUri = 'pshome:gamehub?titleId=%2$s' WHERE "
+      "localConceptId = 'cid:local:%2$s';"
+      "UPDATE tbl_conceptmetadata SET dispLocation = 138 WHERE localConceptId = 'cid:local:%2$s'", user, gc);
+  run_info("UPDATE tbl_conceptinfo SET val = 138 WHERE local_concept_id = 'cid:local:PSGC50001' AND key = "
+           "'display_location'");
+  assert(scalar_of(gc_concept, user, gc) == 1);
+  assert(scalar_of("SELECT dispLocation FROM tbl_conceptmetadata WHERE localConceptId = 'cid:local:%2$s'", user, gc) == 188);
+  assert(info_scalar("SELECT val FROM tbl_conceptinfo WHERE local_concept_id = 'cid:local:PSGC50001' AND key = "
+                     "'display_location'") == 188);
+
+  // Welcome: shown on every profile with the hidden bit cleared everywhere, kept shown when the system hides it at a
+  // restart, and hidden again exactly as the system had it.
+  expect_welcome(user, 147, 0);
+  assert(show_welcome(0, backup, sizeof backup, message, sizeof message) == 409);
+  assert(show_welcome(1, backup, sizeof backup, message, sizeof message) == 200);
+  expect_welcome(user, 146, 1);
+  assert(show_welcome(1, backup, sizeof backup, message, sizeof message) == 409);
+  assert(move_system(WELCOME_TITLE, 1, backup, sizeof backup, message, sizeof message) == 400);
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 0, dispLocation = 147 WHERE titleId = '%2$s';"
+      "UPDATE tbl_contentinfo SET dispLocation = 147 WHERE titleId = '%2$s'", user, WELCOME_TITLE);
+  run_info("UPDATE tbl_appinfo SET val = 147 WHERE titleId = 'NPXS40063' AND key = 'DISPLAYLOCATION'");
+  assert(scalar_of("SELECT visible FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, WELCOME_TITLE) == 1);
+  assert(scalar_of("SELECT dispLocation FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, WELCOME_TITLE) == 146);
+  assert(scalar_of("SELECT dispLocation FROM tbl_contentinfo WHERE titleId = '%2$s'", user, WELCOME_TITLE) == 146);
+  assert(info_scalar("SELECT val FROM tbl_appinfo WHERE titleId = 'NPXS40063' AND key = 'DISPLAYLOCATION'") == 146);
+  run("UPDATE tbl_contentinfo SET AppInfoJson = json_set(AppInfoJson, '$.DISPLAYLOCATION', 147) WHERE titleId = '%2$s'",
+      user, WELCOME_TITLE);
+  assert(restore_system() >= 1 && restore_system() == 0);
+  expect_welcome(user, 146, 1);
+  assert(show_welcome(0, backup, sizeof backup, message, sizeof message) == 200);
+  expect_welcome(user, 147, 0);
+  assert(!scalar("SELECT COUNT(*) FROM lineup_system WHERE titleId = 'NPXS40063'"));
+
+  // Every other system tile showing can hide, and stays hidden; the system's own hidden ones offer nothing.
+  const char* plus = "NPXS40037";
+  if (!scalar_of("SELECT COUNT(*) FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, plus))
+    run("INSERT INTO tbl_iconinfo_%1$s (titleId, titleName, lastAccessIndex, visible, dispLocation) VALUES "
+        "('%2$s','PlayStation Plus',0,0,147)", user, plus);
+  assert(!scalar_of("SELECT visible FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, plus));
+  assert(set_hidden(user, plus, 1, backup, sizeof backup, message, sizeof message) == 409);
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 1 WHERE titleId = '%2$s'", user, plus);  // the system shows it
+  assert(set_hidden(user, plus, 1, backup, sizeof backup, message, sizeof message) == 200);
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 1 WHERE titleId = '%2$s'", user, plus);  // and again, at a restart
+  assert(!scalar_of("SELECT visible FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, plus));
+  assert(set_hidden(user, plus, 0, backup, sizeof backup, message, sizeof message) == 200);
+  assert(scalar_of("SELECT visible FROM tbl_iconinfo_%1$s WHERE titleId = '%2$s'", user, plus) == 1);
+  run("UPDATE tbl_iconinfo_%1$s SET visible = 0 WHERE titleId = '%2$s'", user, plus);  // as the system had it
+
+  // The Media Gallery is on its tab's row, and pins there: kept first while another app is opened.
+  {
+    static Row rows[MAX_GAMES], posted[MAX_GAMES];
+    int count = tab_rows(user, MEDIA_TAB, rows), at = -1;
+    for (int i = 0; i < count; ++i) if (!strcmp(rows[i].title, GALLERY_TITLE)) at = i;
+    assert(at >= 0 && count >= 2);
+    posted[0] = rows[at];
+    posted[0].pinned = 1;
+    for (int i = 0, j = 1; i < count; ++i) if (i != at) posted[j++] = rows[i];
+    char integrity[256];
+    assert(save_order(user, MEDIA_TAB, posted, count, backup, sizeof backup, integrity, sizeof integrity, message,
+                      sizeof message) == 200 && !strcmp(integrity, "ok"));
+    assert(tab_rows(user, MEDIA_TAB, rows) == count && !strcmp(rows[0].title, GALLERY_TITLE));
+    char other[16];
+    snprintf(other, sizeof other, "%s", rows[count - 1].title);
+    open_game(user, other);
+    assert(tab_rows(user, MEDIA_TAB, rows) == count && !strcmp(rows[0].title, GALLERY_TITLE) &&
+           !strcmp(rows[1].title, other));
+    // Moved back to Games, it loses its pin and joins that row.
+    assert(move_system(GALLERY_TITLE, 0, backup, sizeof backup, message, sizeof message) == 200);
+    assert(tab_rows(user, MEDIA_TAB, rows) == count - 1);
+    assert(!scalar_of("SELECT COUNT(*) FROM sqlite_master WHERE name = 'lineup_pin'", user, "") ||
+           !scalar_of("SELECT COUNT(*) FROM lineup_pin WHERE titleId = '%2$s'", user, GALLERY_TITLE));
+    count = tab_rows(user, GAMES_TAB, rows);
+    at = -1;
+    for (int i = 0; i < count; ++i) if (!strcmp(rows[i].title, GALLERY_TITLE)) at = i;
+    assert(at >= 0);
+    assert(move_system(GALLERY_TITLE, 1, backup, sizeof backup, message, sizeof message) == 200);
+  }
+
+  // TabShifter's tile goes from both databases, once; its nsx flags stay.
+  long long flags = scalar_of("SELECT COUNT(*) FROM tbl_info_%1$s WHERE key GLOB 'nsx_content_flag_*'", user, "");
+  int removed = 0;
+  assert(remove_tabshifter(&removed, backup, sizeof backup, message, sizeof message) == 200 && removed > 0);
+  assert(!scalar("SELECT COUNT(*) FROM tbl_contentinfo WHERE titleId = 'TBSH00001'"));
+  assert(!scalar_of("SELECT COUNT(*) FROM tbl_iconinfo_%1$s WHERE titleId = 'TBSH00001'", user, ""));
+  assert(!scalar_of("SELECT COUNT(*) FROM tbl_concepticoninfo_%1$s WHERE localConceptId = 'cid:local:TBSH00001'", user, ""));
+  assert(!info_scalar("SELECT COUNT(*) FROM tbl_appinfo WHERE titleId = 'TBSH00001'") &&
+         !info_scalar("SELECT COUNT(*) FROM tbl_conceptinfo WHERE local_concept_id = 'cid:local:TBSH00001'"));
+  assert(scalar_of("SELECT COUNT(*) FROM tbl_info_%1$s WHERE key GLOB 'nsx_content_flag_*'", user, "") == flags);
+  assert(remove_tabshifter(&removed, backup, sizeof backup, message, sizeof message) == 200 && !removed);
+
+  // /pins/uninstall takes every lineup_* object out of both databases and leaves the tiles where they are.
+  assert(integrity_ok(db_path) && integrity_ok(appinfo_path));
+  assert(unpin(NULL, backup, sizeof backup, message, sizeof message) == 200);
+  assert(!scalar("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'lineup%'"));
+  assert(!info_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'lineup%'"));
+  expect_system(user, GALLERY_TITLE, 156, 2204);
+  assert(integrity_ok(db_path) && integrity_ok(appinfo_path));
+}
+
+// Self-check: lineupd-test [<copy of app.db> <userId> [<copy of appinfo.db>]]. Reorders the copy (or a synthetic
+// database), checks it, restores it. Given a copy of appinfo.db as well, moves the system tiles on the copies.
 int main(int argc, char** argv) {
   Row current[3] = {{"PPSA00001", 30, 0}, {"PPSA00002", 20, 0}, {"PPSA00003", 10, 0}};
   Row posted[3] = {{"PPSA00003", 10, 0}, {"PPSA00001", 30, 0}, {"PPSA00002", 20, 0}};
@@ -2852,7 +4143,7 @@ int main(int argc, char** argv) {
   const char* user = argc >= 3 ? argv[2] : "0000000001";
   db_path = argc >= 3 ? argv[1] : "/tmp/lineupd-test.db";
   backup_dir = "/tmp/lineupd-test-backups";
-  appinfo_path = "/tmp/lineupd-test-appinfo.db";
+  appinfo_path = argc >= 4 ? argv[3] : "/tmp/lineupd-test-appinfo.db";
   sqlite3* db;
   if (argc < 3) {
     unlink(db_path);
@@ -2890,6 +4181,17 @@ int main(int argc, char** argv) {
   sqlite3_close(db);
   for (int i = 0; i < count; ++i) assert(!strcmp(after[i].title, before[i].title) && after[i].index == before[i].index);
   if (argc < 3) test_pins();
+  // System tiles: on the copies given, else on a synthetic pair.
+  if (argc >= 4) test_system(user);
+  else if (argc < 3) {
+    const char *app = db_path, *info = appinfo_path;
+    db_path = "/tmp/lineupd-test-system.db";
+    appinfo_path = "/tmp/lineupd-test-system-appinfo.db";
+    make_system_databases("0000000007");
+    test_system("0000000007");
+    db_path = app;
+    appinfo_path = info;
+  }
 
   // Profile pictures: folders named with 8 and 16 hex digits.
   profile_cache_dir = "/tmp/lineupd-test-profile";
