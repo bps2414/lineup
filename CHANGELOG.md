@@ -10,11 +10,14 @@
 - Moving an app now moves its concept too, which 1.8.0 left on the old tab. Apps moved before are fixed when
   Lineup starts.
 - More options has Remove TabShifter leftovers: TabShifter's "TS" tile goes from both databases.
-- Backups: the first start keeps both databases for good in /data/lineup/backups (original-app.db,
-  original-appinfo.db), and two backups in the same second no longer overwrite each other.
+- Backups: the first time this version runs, it keeps both databases for good in /data/lineup/backups
+  (original-app.db, original-appinfo.db), before its own checks write. After an upgrade they already hold what
+  earlier versions of Lineup changed, so they are not a copy from before Lineup. Two backups in the same second no
+  longer overwrite each other.
 - Triggers and writes are made only for the columns the firmware has.
 - The build downloads the OpenGL SDK from a second mirror when the first is gone.
-- A lineupd left running by another build is replaced when Lineup opens: /version answers a build too.
+- When Lineup opens, it replaces a running lineupd whose version or build differs: /version answers a build too,
+  the commit for a CI build. Builds made locally all answer local, so two of one version still look alike.
 
 ## 1.8.0
 

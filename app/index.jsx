@@ -627,9 +627,20 @@ function App() {
     }
     toast(error || T.apps.done[action](name));
   };
+  // The tile may be on the row: after a removal the tab reloads, as after changeApp.
   const removeTabShifter = async () => {
+    const p = ref.current;
     patch({layer: 'busy'});
     const {removed, error} = await api.removeTabShifter();
+    if (!error && removed) {
+      const keep = {focus: p.focus};
+      try {
+        await loadRow(p.user, p.profiles, p.tab, keep).catch(() => loadRow(p.user, p.profiles, 'games', keep));
+      } catch (problem) {
+        patch({phase: 'error', error: problem});
+        return;
+      }
+    }
     close();
     toast(error || T.cleanup.done(removed));
   };
@@ -758,7 +769,7 @@ function App() {
             <SheetItem key="updates" label={T.menu.updates} onPress={() => patch({layer: 'updates'})} />,
             <SheetItem key="report" label={T.report.save} onPress={saveReport} />,
             <SheetItem key="remove-pins" label={T.pins.removeAll} onPress={() => patch({layer: 'removePins'})} />,
-            <SheetItem key="tabshifter" label={T.cleanup.item} onPress={() => patch({layer: 'removeTabShifter'})} />,
+            <SheetItem key="tabshifter" label={T.cleanup.item} onPress={() => askApp('removeTabShifter')} />,
             <SheetItem key="star" label={T.star.item} onPress={() => patch({layer: 'star'})} />,
           ] : s.layer === 'star' ? [
             // The repo's address as a code the phone's camera reads: the audience is at the TV, with no mouse.
