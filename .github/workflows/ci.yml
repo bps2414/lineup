@@ -25,6 +25,13 @@ jobs:
         with:
           path: ps5-react/.deps
           key: deps-${{ hashFiles('ps5-react/dependencies.lock.json') }}
+      - name: Stamp the build
+        # The app replaces a lineupd of another build; test builds share a version, so the commit tells them apart.
+        run: |
+          B="$(git rev-parse --short HEAD)"
+          sed -i "s/^export const BUILD = 'local';/export const BUILD = '$B';/" app/api.js
+          sed -i "s/^#define LINEUPD_BUILD \"local\"/#define LINEUPD_BUILD \"$B\"/" app/payloads/lineupd.c
+          grep -q "BUILD = '$B'" app/api.js && grep -q "LINEUPD_BUILD \"$B\"" app/payloads/lineupd.c
       - run: scripts/test.sh
       - run: scripts/build.sh
       - name: Package

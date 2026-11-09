@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- The Media Gallery moves between the Games and Media tabs (focus it on the row, Options, Move), and stays there
+  after a restart or rest mode. The PS Store only hides. Game Library and App Library never move or hide.
+- The Media Gallery is on its tab's row: it can be pinned and moved from the row like an app.
+- Welcome can be shown, on every profile, and hidden again (Options, Hidden apps).
+- Every other system tile that is showing can be hidden, and stays hidden.
+- Moving an app now moves its concept too, which 1.8.0 left on the old tab. Apps moved before are fixed when
+  Lineup starts.
+- More options has Remove TabShifter leftovers: TabShifter's "TS" tile goes from both databases.
+- Backups: the first time this version runs, it keeps both databases for good in /data/lineup/backups
+  (original-app.db, original-appinfo.db), before its own checks write. After an upgrade they already hold what
+  earlier versions of Lineup changed, so they are not a copy from before Lineup. Two backups in the same second no
+  longer overwrite each other.
+- Triggers and writes are made only for the columns the firmware has.
+- The build downloads the OpenGL SDK from a second mirror when the first is gone.
+- When Lineup opens, it replaces a running lineupd whose version or build differs: /version answers a build too,
+  the commit for a CI build. Builds made locally all answer local, so two of one version still look alike.
+
 ## 1.8.0
 
 - A moved app stays on its new tab when it is installed again. Game Compressor's payload installs its shortcut
