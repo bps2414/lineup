@@ -71,6 +71,7 @@ const en = {
     moveTo: tab => `Move to ${tab}`, hide: 'Hide from the home screen',
     store: 'PS Store', storeHidden: 'Hidden', storeShown: 'Showing',
     gallery: 'Media Gallery', galleryHidden: 'Hidden', galleryShown: 'Showing',
+    library: 'All Apps', libraryHidden: 'Hidden', libraryShown: 'Showing',
     welcome: 'Welcome, on every profile', welcomeShown: 'Showing', welcomeHidden: 'Hidden',
     systemLabel: 'Other system tiles', hideTile: 'Hide',
     show: 'Bring back',
@@ -94,8 +95,8 @@ const en = {
     body: 'Lineup backs up both home screen databases first, then takes TabShifter\'s "TS" tile out of them and '
       + 'deletes its folders. Do this only after deleting TabShifter.',
     confirm: 'Remove', cancel: 'Cancel',
-    done: removed => (removed ? "TabShifter's tile was removed. The home screen updates when Lineup closes."
-      : 'No TabShifter tile was found.'),
+    done: (removed, folders) => (removed ? "TabShifter's tile was removed. The home screen updates when Lineup closes."
+      : folders ? 'No TabShifter tile was left; its folders were deleted.' : 'No TabShifter tile was found.'),
     failed: detail => `Nothing was removed (${detail}).`,
   },
   report: {
@@ -189,9 +190,9 @@ const pt = {
     profiles: 'os perfis',
     row: 'a fileira',
     hidden: 'os apps escondidos',
-    saveNoAnswer: 'O serviço não respondeu ao salvar. Abra o app de novo para conferir a ordem.',
+    saveNoAnswer: 'O serviço não respondeu. Reabra o app e confira a ordem.',
     saveStatus: code => `O serviço respondeu ${code}. Nada foi gravado.`,
-    stale: 'A fileira mudou desde que foi lida. Ela foi carregada de novo.',
+    stale: 'A fileira mudou e foi carregada de novo.',
   },
   emptyRow: ['A fileira está vazia', 'Este perfil não tem jogos na tela inicial.'],
   noProfiles: ['Nenhum perfil encontrado', 'O serviço não achou perfis com fileira na tela inicial.'],
@@ -217,7 +218,7 @@ const pt = {
     missingBody: 'O banco de dados da tela inicial foi reconstruído ou atualizado, e os apps não seguram mais o '
       + 'lugar. Fixar de novo?',
     reapply: 'Fixar de novo', later: 'Agora não',
-    keepFree: 'Deixe um lugar da tela inicial sem fixar, para o último app aberto.',
+    keepFree: 'Deixe um lugar livre para o último app aberto.',
     fullTitle: 'Todos os lugares da tela inicial estão fixos',
     fullBody: 'O último app aberto fica sem lugar ali e vai parar na biblioteca. '
       + 'Liberar o primeiro lugar para ele?',
@@ -234,6 +235,7 @@ const pt = {
     moveTo: tab => `Mover para ${tab}`, hide: 'Esconder da tela inicial',
     store: 'PS Store', storeHidden: 'Escondida', storeShown: 'Aparecendo',
     gallery: 'Galeria de mídia', galleryHidden: 'Escondida', galleryShown: 'Aparecendo',
+    library: 'Todos os apps', libraryHidden: 'Escondido', libraryShown: 'Aparecendo',
     welcome: 'Boas-vindas, em todos os perfis', welcomeShown: 'Aparecendo', welcomeHidden: 'Escondida',
     systemLabel: 'Outros blocos do sistema', hideTile: 'Esconder',
     show: 'Trazer de volta',
@@ -244,10 +246,10 @@ const pt = {
     moveBody: 'Ele muda em todos os perfis e perde o lugar fixo. Dá para mover de volta do mesmo jeito.',
     confirmHide: 'Esconder', confirmMove: 'Mover', cancel: 'Cancelar',
     done: {
-      hide: name => `${name} escondido. A tela inicial atualiza quando o Lineup fechar.`,
-      show: name => `${name} voltou. A tela inicial atualiza quando o Lineup fechar.`,
-      games: name => `${name} foi para Jogos. A tela inicial atualiza quando o Lineup fechar.`,
-      media: name => `${name} foi para Mídia. A tela inicial atualiza quando o Lineup fechar.`,
+      hide: name => `${name} escondido. A tela inicial atualiza ao fechar o Lineup.`,
+      show: name => `${name} voltou. A tela inicial atualiza ao fechar o Lineup.`,
+      games: name => `${name} foi para Jogos. A tela inicial atualiza ao fechar o Lineup.`,
+      media: name => `${name} foi para Mídia. A tela inicial atualiza ao fechar o Lineup.`,
     },
     failed: detail => `Nada mudou (${detail}).`,
   },
@@ -257,8 +259,9 @@ const pt = {
     body: 'O Lineup faz backup dos dois bancos da tela inicial antes, tira deles o bloco "TS" do TabShifter e apaga '
       + 'as pastas dele. Faça isso só depois de apagar o TabShifter.',
     confirm: 'Remover', cancel: 'Cancelar',
-    done: removed => (removed ? 'O bloco do TabShifter foi removido. A tela inicial atualiza quando o Lineup fechar.'
-      : 'Nenhum bloco do TabShifter foi encontrado.'),
+    done: (removed, folders) => (removed ? 'O bloco do TabShifter foi removido. A tela inicial atualiza ao fechar o Lineup.'
+      : folders ? 'Não havia bloco do TabShifter; as pastas foram apagadas.'
+        : 'Nenhum bloco do TabShifter foi encontrado.'),
     failed: detail => `Nada foi removido (${detail}).`,
   },
   report: {

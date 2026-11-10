@@ -185,8 +185,10 @@ Tudo isto foi descoberto lendo e editando uma cópia do banco e conferindo no co
 
 1. `PRAGMA quick_check`. Se falhar, nada é gravado.
 2. `VACUUM INTO /data/lineup/backups/app-<hora>.db`, guardando os 5 backups mais recentes.
-3. `BEGIN IMMEDIATE` e nova leitura da fileira. A lista enviada precisa ser exatamente os jogos atuais
-   com os índices que o app leu. Senão, o serviço responde 409 e desfaz.
+3. `BEGIN IMMEDIATE` e nova leitura da fileira. A lista enviada precisa ser exatamente os jogos atuais,
+   ainda na ordem que o app leu (pelos índices que ele leu, do maior para o menor). Senão, o serviço responde 409
+   e desfaz. Só a ordem conta: com o Lineup aberto, o console sobe o `lastAccessIndex` a cada meio minuto mais ou
+   menos e o `lineup_pin_u` renumera os apps fixados, então os índices lidos ficam velhos com a fileira igual.
 4. Atualiza o `lastAccessIndex` de cada jogo, confere que mudou exatamente uma linha por jogo e faz o
    `COMMIT`.
 5. `PRAGMA integrity_check`. O resultado é devolvido e registrado no log.

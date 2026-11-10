@@ -3,7 +3,7 @@
 import {Archives, Downloads, FileSystem, Http, Payloads} from '@ps5-react/core';
 import {T} from './i18n.js';
 
-export const VERSION = '1.8.0';
+export const VERSION = '2.0.0';
 // "local", or the commit of a CI build, as LINEUPD_BUILD in lineupd.c: a service of another build is replaced.
 export const BUILD = 'local';
 const SERVICE = `${VERSION}+${BUILD}`;
@@ -85,13 +85,17 @@ export async function ensureService(onStep) {
   throw problem(T.service.noAnswer);
 }
 
-// The service's own message is English detail; the title is always in the interface language.
-async function read(path, what) {
+// The service's own message is English detail; the title is always in the interface language. The service answers one
+// request at a time and checks its databases right after starting, so a read can wait behind that: `patient` waits
+// longer and asks again once.
+async function read(path, what, patient = false) {
   let reply;
-  try {
-    reply = await call(path, {timeoutMs: 8000});
-  } catch {
-    throw problem(T.service.stopped(what));
+  for (let attempt = 0; !reply; attempt++) {
+    try {
+      reply = await call(path, {timeoutMs: patient ? 20000 : 8000});
+    } catch {
+      if (!patient || attempt) throw problem(T.service.stopped(what));
+    }
   }
   if (!reply.ok) throw new Problem(T.service.readFailed(what), reply.data.error ?? T.service.status(reply.status));
   return reply.data;
@@ -103,7 +107,7 @@ export const profiles = async () => (await read('/profiles', T.service.profiles)
  * (triggers lost) or 'off'.
  */
 export async function row(user, tab = 'games') {
-  const data = await read(`/row?user=${user}&tab=${tab}`, T.service.row);
+  const data = await read(`/row?user=${user}&tab=${tab}`, T.service.row, true);
   return {games: data.games ?? [], pins: data.pins ?? 'off'};
 }
 export const iconUrl = game => `${BASE}/icon/${game.titleId}?m=${game.icon}`;
@@ -147,11 +151,11 @@ export async function hidden(user) {
   return {hidden: data.hidden ?? [], system: data.system ?? []};
 }
 
-/** Removes TabShifter's tile from the home screen databases. Resolves to {removed} or {error}. */
+/** Removes TabShifter's tile and folders. Resolves to {removed, folders} (tiles and folders deleted) or {error}. */
 export async function removeTabShifter() {
   try {
     const reply = await call('/tabshifter/remove', {method: 'POST', timeoutMs: 15000});
-    return reply.ok ? {removed: reply.data.removed ?? 0}
+    return reply.ok ? {removed: reply.data.removed ?? 0, folders: reply.data.folders ?? 0}
       : {error: T.cleanup.failed(reply.data.error ?? T.service.status(reply.status))};
   } catch {
     return {error: T.cleanup.failed(T.pins.noAnswer)};

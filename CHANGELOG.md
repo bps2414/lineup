@@ -1,15 +1,25 @@
 # Changelog
 
-## Unreleased
+## 2.0.0
 
+- Saving no longer fails with "The row changed since it was read" once apps are pinned. The console renumbers the
+  pinned apps every half minute while Lineup is open; a save now checks the order, not the exact numbers (#19).
+- All Apps, the App Library tile on the Media tab, can be hidden and shown again from Hidden apps, like the PS Store
+  and the Media Gallery (#14).
+- Switching to the Media tab right after Lineup opens waits for the service instead of failing after a few seconds,
+  and asks again once (#15).
+- Shorter Brazilian Portuguese messages, so they fit on the notification (#16).
+- The QR code on the star page draws whole, so a phone can read it. It was cut off about halfway (#21).
 - The Media Gallery moves between the Games and Media tabs (focus it on the row, Options, Move), and stays there
-  after a restart or rest mode. The PS Store only hides. Game Library and App Library never move or hide.
+  after a restart or rest mode. The PS Store and App Library only hide. Game Library never moves or hides.
 - The Media Gallery is on its tab's row: it can be pinned and moved from the row like an app.
 - Welcome can be shown, on every profile, and hidden again (Options, Hidden apps).
-- Every other system tile that is showing can be hidden, and stays hidden.
+- Every other system tile that is showing on a tab can be hidden, and stays hidden.
+- The Media Gallery goes back to its place in the Games row's system group when it moves back from Media.
 - Moving an app now moves its concept too, which 1.8.0 left on the old tab. Apps moved before are fixed when
   Lineup starts.
-- More options has Remove TabShifter leftovers: TabShifter's "TS" tile goes from both databases.
+- More options has Remove TabShifter leftovers: TabShifter's "TS" tile goes from both databases, and its folders.
+  The message says when only folders were left.
 - Backups: the first time this version runs, it keeps both databases for good in /data/lineup/backups
   (original-app.db, original-appinfo.db), before its own checks write. After an upgrade they already hold what
   earlier versions of Lineup changed, so they are not a copy from before Lineup. Two backups in the same second no
