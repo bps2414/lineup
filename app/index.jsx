@@ -275,6 +275,7 @@ const PICK_HINTS = [['cross', H.choose], ['circle', H.back]];
 const STORE = 'NPXS40047';
 const GALLERY = 'NPXS40075';
 const WELCOME = 'NPXS40063';
+const APP_LIBRARY = 'NPXS40139';
 
 // The side sheet's pages: title and subtitle. The menu and Updates work out their own subtitle.
 const SHEETS = {menu: [T.menu.title], profiles: [T.profilesTitle, T.profilesSubtitle], updates: [T.updates.title],
@@ -631,7 +632,7 @@ function App() {
   const removeTabShifter = async () => {
     const p = ref.current;
     patch({layer: 'busy'});
-    const {removed, error} = await api.removeTabShifter();
+    const {removed, folders, error} = await api.removeTabShifter();
     if (!error && removed) {
       const keep = {focus: p.focus};
       try {
@@ -642,7 +643,7 @@ function App() {
       }
     }
     close();
-    toast(error || T.cleanup.done(removed));
+    toast(error || T.cleanup.done(removed, folders));
   };
   const askApp = layer => {
     if (changed(ref.current)) toast(T.tabs.saveFirst);
@@ -669,11 +670,12 @@ function App() {
   const hiddenApps = s.hidden ?? [];
   const storeHidden = hiddenApps.some(app => app.titleId === STORE);
   const galleryHidden = hiddenApps.some(app => app.titleId === GALLERY);
-  const otherHidden = hiddenApps.filter(app => app.titleId !== STORE && app.titleId !== GALLERY);
+  const libraryHidden = hiddenApps.some(app => app.titleId === APP_LIBRARY);
+  const otherHidden = hiddenApps.filter(app => ![STORE, GALLERY, APP_LIBRARY].includes(app.titleId));
   const otherTab = s.tab === 'games' ? 'media' : 'games';
   // Welcome shows on every profile; the other system tiles showing can hide on this one.
   const welcome = (s.system ?? []).find(tile => tile.titleId === WELCOME);
-  const otherSystem = (s.system ?? []).filter(tile => tile.visible && ![STORE, GALLERY, WELCOME].includes(tile.titleId));
+  const otherSystem = (s.system ?? []).filter(tile => tile.visible && ![STORE, GALLERY, WELCOME, APP_LIBRARY].includes(tile.titleId));
 
   if (s.phase === 'loading') {
     return (
@@ -745,6 +747,8 @@ function App() {
               onPress={() => changeApp(STORE, storeHidden ? 'show' : 'hide', T.apps.store)} />,
             <SheetItem key="gallery" label={T.apps.gallery} detail={galleryHidden ? T.apps.galleryHidden : T.apps.galleryShown}
               onPress={() => changeApp(GALLERY, galleryHidden ? 'show' : 'hide', T.apps.gallery)} />,
+            <SheetItem key="library" label={T.apps.library} detail={libraryHidden ? T.apps.libraryHidden : T.apps.libraryShown}
+              onPress={() => changeApp(APP_LIBRARY, libraryHidden ? 'show' : 'hide', T.apps.library)} />,
             welcome && (welcome.shown || welcome.tab !== 'none') ? (
               <SheetItem key="welcome" label={T.apps.welcome}
                 detail={welcome.shown ? T.apps.welcomeShown : T.apps.welcomeHidden}
@@ -774,9 +778,15 @@ function App() {
           ] : s.layer === 'star' ? [
             // The repo's address as a code the phone's camera reads: the audience is at the TV, with no mouse.
             <View key="code" className="mx-5 mb-2 p-8 self-start rounded-[10px] bg-fg">
-              <Svg width={px(220)} height={px(220)} viewBox={`0 0 ${qr.SIZE} ${qr.SIZE}`}>
-                <Path d={qr.PATH} fill={C.canvas} />
-              </Svg>
+              <View style={{width: px(220), height: px(220)}}>
+                {qr.PATHS.map(d => (
+                  <View key={d} className="absolute left-0 top-0">
+                    <Svg width={px(220)} height={px(220)} viewBox={`0 0 ${qr.SIZE} ${qr.SIZE}`}>
+                      <Path d={d} fill={C.canvas} />
+                    </Svg>
+                  </View>
+                ))}
+              </View>
             </View>,
             <SheetNote key="body">{T.star.body}</SheetNote>,
             <SheetItem key="done" label={T.star.done} onPress={() => patch({layer: 'more'})} />,

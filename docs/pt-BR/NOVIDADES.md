@@ -2,6 +2,34 @@
 
 As notas que o app mostra ao atualizar. Cada versão aqui acompanha a mesma seção do `CHANGELOG.md`.
 
+## 2.0.0
+
+- Salvar não falha mais com "A fileira mudou" quando há apps fixados. Com o Lineup aberto, o console renumera os
+  apps fixados a cada meio minuto; agora o salvar confere a ordem, não os números exatos (#19).
+- Todos os apps, o bloco da biblioteca na aba Mídia, pode ser escondido e trazido de volta em Apps escondidos, como
+  a PS Store e a Galeria de mídia (#14).
+- Ir para a aba Mídia logo depois de abrir o Lineup espera o serviço em vez de falhar depois de alguns segundos, e
+  pede de novo uma vez (#15).
+- Mensagens em português mais curtas, para caber na notificação (#16).
+- O QR code da página da estrela aparece inteiro, e o celular consegue ler. Ele era cortado pela metade (#21).
+- A Galeria de mídia muda entre as abas Jogos e Mídia (foque nela na fileira, Opções, Mover) e fica lá depois de
+  reiniciar ou do modo de descanso. A PS Store e Todos os apps só escondem. A biblioteca de jogos nunca muda nem
+  esconde.
+- A Galeria de mídia fica na fileira da aba dela: dá para fixar e mover na fileira como um app.
+- As Boas-vindas podem aparecer, em todos os perfis, e ser escondidas de novo (Opções, Apps escondidos).
+- Qualquer outro bloco do sistema que aparece numa aba pode ser escondido, e continua escondido.
+- A Galeria de mídia volta ao lugar dela no grupo do sistema da fileira de Jogos quando sai de Mídia.
+- Mover um app agora move o conceito dele junto, que a 1.8.0 deixava na aba antiga. Apps movidos antes são
+  corrigidos quando o Lineup inicia.
+- Mais opções tem Remover restos do TabShifter: o bloco "TS" sai dos dois bancos, e as pastas dele também. A
+  mensagem avisa quando só sobravam as pastas.
+- Backups: na primeira vez que esta versão roda, ela guarda os dois bancos de vez em /data/lineup/backups
+  (original-app.db, original-appinfo.db), antes de as próprias verificações gravarem. Depois de atualizar, eles já
+  têm o que versões anteriores do Lineup mudaram, então não são uma cópia de antes do Lineup. Dois backups no mesmo
+  segundo não se sobrescrevem mais.
+- Triggers e gravações só usam as colunas que o firmware tem.
+- Ao abrir, o Lineup troca um lineupd rodando de outra versão ou build.
+
 ## 1.8.0
 
 - Um app movido continua na aba nova quando é instalado de novo. O payload do Game Compressor instala o atalho de
