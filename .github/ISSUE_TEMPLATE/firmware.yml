@@ -1,0 +1,42 @@
+name: Firmware report
+description: Say whether Lineup works on your firmware
+title: "Firmware <version>: works / does not work"
+labels: [firmware]
+body:
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware
+      placeholder: "11.40"
+    validations:
+      required: true
+  - type: input
+    id: setup
+    attributes:
+      label: Jailbreak and payloads
+      description: Loader, kstuff and ShadowMountPlus versions.
+      placeholder: "kstuff-lite 1.07, elfldr 0.26, ShadowMountPlus 1.7"
+    validations:
+      required: true
+  - type: input
+    id: lineup
+    attributes:
+      label: Lineup version
+      placeholder: "2.0.0"
+    validations:
+      required: true
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What worked
+      options:
+        - label: Lineup opens and shows the row
+        - label: Saving a new order
+        - label: Pins hold after opening other games
+        - label: Moving an app between Games and Media
+        - label: Hiding an app, and it stays hidden after a restart
+  - type: textarea
+    id: notes
+    attributes:
+      label: What went wrong
+      description: On firmware older than 11.00, attach the file from Options → More options → Save a bug report (/data/lineup/report.json). It has no names or passwords.
