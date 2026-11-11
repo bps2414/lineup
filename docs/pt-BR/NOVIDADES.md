@@ -2,6 +2,14 @@
 
 As notas que o app mostra ao atualizar. Cada versão aqui acompanha a mesma seção do `CHANGELOG.md`.
 
+## 2.0.1
+
+- Mover um app cujo `AppInfoJson` é uma lista de campos, como firmwares antigos e alguns instaladores de pacote
+  gravam, agora muda a aba, a categoria e o link dentro dessa lista. Antes o Lineup criava chaves novas ao lado e
+  deixava a lista na aba antiga. Essas chaves somem quando o app muda de novo ou o Lineup abre.
+- O README diz quais firmwares foram verificados: um console no 13.60 e cópias dos bancos da tela inicial do 11.40 e
+  do 13.00. Um formulário novo recebe relatos de firmware.
+
 ## 2.0.0
 
 - Salvar não falha mais com "A fileira mudou" quando há apps fixados. Com o Lineup aberto, o console renumera os

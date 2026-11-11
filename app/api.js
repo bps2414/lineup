@@ -3,7 +3,7 @@
 import {Archives, Downloads, FileSystem, Http, Payloads} from '@ps5-react/core';
 import {T} from './i18n.js';
 
-export const VERSION = '2.0.0';
+export const VERSION = '2.0.1';
 // "local", or the commit of a CI build, as LINEUPD_BUILD in lineupd.c: a service of another build is replaced.
 export const BUILD = 'local';
 const SERVICE = `${VERSION}+${BUILD}`;

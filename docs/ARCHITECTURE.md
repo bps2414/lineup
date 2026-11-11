@@ -248,6 +248,11 @@ title and tab. `restore_moved` writes apps moved by 1.8.0 once, which records th
 Every trigger and write here is made only when the firmware has its table's columns (`has_column`), so a firmware
 without one gets no trigger that would fail its writes.
 
+`AppInfoJson` has two shapes: flat (`{"DISPLAYLOCATION":138, ...}`), as 11.40, 13.00 and 13.60 write it, and a
+field list (`{"field_list":[{"data":138,"key":"DISPLAYLOCATION", ...}]}`), as older firmware and package installers
+such as elf-arsenal write it. `set_app_field` writes the entry's `data` (and `size` for text) in a field list, else the
+key at the top; `APP_FIELD` reads either, the field list first.
+
 ## Backups
 
 Before every write, `lineupd` copies `app.db` (and `appinfo.db` when it writes there) to

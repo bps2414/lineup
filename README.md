@@ -75,7 +75,7 @@ You need a PS5 running a jailbreak with **kstuff**, an **ELF loader on port 9021
 
 Prefer a folder? Unzip `Lineup-<version>.zip` and upload its `PPSA99077/` folder to `/data/homebrew/PPSA99077` instead. Use one or the other: both register title ID `PPSA99077`.
 
-Tested on firmware **13.60** with kstuff, elfldr 0.26 and ShadowMountPlus. Other firmware versions are untested.
+Tested on a console on firmware **13.60** with kstuff, elfldr 0.26 and ShadowMountPlus. The home screen database of **11.40** and **13.00** has the same layout, and Lineup's self-test (order, pins, moving and hiding) passes on copies of it; firmware older than 11.00 has not been checked. Lineup runs wherever ShadowMountPlus and an ELF loader on port 9021 do.
 
 ## Controls
 
@@ -92,7 +92,7 @@ Tested on firmware **13.60** with kstuff, elfldr 0.26 and ShadowMountPlus. Other
 ## Safety
 
 - Writes go through the **lineupd** service only, in one SQLite transaction. The new order reuses the index values the row already holds, so no value grows past what the system expects.
-- Before each save, lineupd copies the database to `/data/lineup/backups/` (the 5 newest are kept) and runs SQLite's `quick_check` first. It runs `integrity_check` after the write.
+- Before each save, lineupd copies the database to `/data/lineup/backups/` (the 10 newest are kept, plus the databases as they were the first time 2.0.0 ran) and runs SQLite's `quick_check` first. It runs `integrity_check` after the write.
 - If the row changed since Lineup read it (you opened a game meanwhile), the save is refused and the row reloads.
 
 ## FAQ
@@ -104,7 +104,7 @@ That is the system's rule, and Lineup keeps it. Pin the game with □ and save: 
 Yes. Lineup writes it where the home screen keeps the row, and hidden apps stay hidden too.
 
 **Does it work on my firmware?**
-It is tested on 13.60. If you try it on another version, open an [issue](https://github.com/bps2414/lineup/issues) saying whether it worked.
+It is tested on a 13.60 console, and its database checks pass on copies from 11.40 and 13.00. On another version, [report whether it worked](https://github.com/bps2414/lineup/issues/new?template=firmware.yml); on firmware older than 11.00, attach Options → More options → Save a bug report, since the database there may differ.
 
 **How do I go back to the system's order?**
 Options → More options → Remove pins from every profile. Every profile goes back to "last opened comes first", and hidden apps come back.

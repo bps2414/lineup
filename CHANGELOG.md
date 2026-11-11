@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.1
+
+- Moving an app whose `AppInfoJson` is a field list, as older firmware and some package installers write it, now
+  changes the tab, category and hub link inside that list. Lineup used to add them as new keys beside it and leave
+  the list on the old tab. Those keys go when the app moves again or Lineup starts.
+- The README says which firmware has been checked: a 13.60 console, and copies of the 11.40 and 13.00 home screen
+  databases. A new issue form takes firmware reports.
+
 ## 2.0.0
 
 - Saving no longer fails with "The row changed since it was read" once apps are pinned. The console renumbers the

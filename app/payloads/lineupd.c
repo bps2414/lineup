@@ -70,7 +70,7 @@
 #define LOG(fmt, ...) klog_printf("[lineupd] " fmt "\n", ##__VA_ARGS__)
 #endif
 
-#define LINEUPD_VERSION "2.0.0"
+#define LINEUPD_VERSION "2.0.1"
 // Which build this is: "local", or the commit for a CI build (.github/workflows/ci.yml writes it, with BUILD in
 // app/api.js). Builds of one version answer /version alike, so without it the app kept talking to a lineupd left
 // running by an earlier test build.
@@ -988,6 +988,34 @@ done:
 // `json` when it is valid, else an empty object: json_each fails the whole statement on malformed JSON.
 #define SAFE_JSON(json) "CASE WHEN json_valid(" json ") THEN " json " ELSE '{}' END"
 
+// AppInfoJson comes in two shapes: flat ({"DISPLAYLOCATION":138, ...}), as the console writes it on 11.00 and later,
+// and a field list ({"field_list":[{"data":138,"key":"DISPLAYLOCATION", ...}, ...]}), as older firmware and some
+// package installers write it. APP_FIELD reads `key` from either, the field list first.
+#define APP_FIELD(json, key) "coalesce((SELECT e.value ->> '$.data' FROM json_each(" SAFE_JSON(json) ", '$.field_list') e " \
+  "WHERE e.value ->> '$.key' = '" key "' LIMIT 1), " SAFE_JSON(json) " ->> '$." key "')"
+
+// Sets `key` of `title`'s AppInfoJson to `text`, or to `number` when `text` is NULL: in a field list, the data of
+// its entry (and the size, for text), and a copy of the key an earlier Lineup put at the top goes; else the key at
+// the top. Returns 0, or -1 on failure.
+static int set_app_field(sqlite3* db, const char* title, const char* key, long long number, const char* text) {
+  char sql[1024];
+  snprintf(sql, sizeof sql,
+           "UPDATE tbl_contentinfo SET AppInfoJson = CASE WHEN json_type(AppInfoJson, '$.field_list') = 'array' THEN "
+           "json_remove(ifnull((SELECT CASE WHEN typeof(?2) = 'text' AND json_type(e.value, '$.size') IS NOT NULL THEN "
+           "json_set(AppInfoJson, '$.field_list[' || e.key || '].data', ?2, '$.field_list[' || e.key || '].size', "
+           "length(CAST(?2 AS BLOB))) ELSE json_set(AppInfoJson, '$.field_list[' || e.key || '].data', ?2) END FROM "
+           "json_each(AppInfoJson, '$.field_list') e WHERE e.value ->> '$.key' = '%1$s' LIMIT 1), AppInfoJson), '$.%1$s') "
+           "ELSE json_set(AppInfoJson, '$.%1$s', ?2) END WHERE titleId = ?1 AND json_valid(AppInfoJson)", key);
+  sqlite3_stmt* statement;
+  if (sqlite3_prepare_v2(db, sql, -1, &statement, NULL) != SQLITE_OK) return -1;
+  sqlite3_bind_text(statement, 1, title, -1, SQLITE_STATIC);
+  if (text) sqlite3_bind_text(statement, 2, text, -1, SQLITE_STATIC);
+  else sqlite3_bind_int64(statement, 2, number);
+  int step = sqlite3_step(statement);
+  sqlite3_finalize(statement);
+  return step == SQLITE_DONE ? 0 : -1;
+}
+
 // Whether `schema`.`table` has every column of `columns` (NULL-terminated).
 static int has_columns(sqlite3* db, const char* schema, const char* table, const char* const* columns) {
   for (; *columns; ++columns) if (!has_column(db, schema, table, *columns)) return 0;
@@ -1241,8 +1269,7 @@ static int write_move(sqlite3* db, const char* title, int location, char users[]
   char hub[96];
   snprintf(hub, sizeof hub, media ? "psmediahub:main?titleId=%s" : "pshome:gamehub?titleId=%s", title);
   const char* const shared[] = {
-    "UPDATE tbl_contentinfo SET dispLocation = ?2, categoryType = ?3, is3rdPartyVideoApp = ?4, pprHubAppUri = ?5, "
-    "AppInfoJson = json_set(AppInfoJson, '$.DISPLAYLOCATION', ?2, '$.CATEGORY_TYPE', ?3, '$.HUBAPP_URI', ?5) "
+    "UPDATE tbl_contentinfo SET dispLocation = ?2, categoryType = ?3, is3rdPartyVideoApp = ?4, pprHubAppUri = ?5 "
     "WHERE titleId = ?1",
     "UPDATE info.tbl_appinfo SET val = CASE key WHEN 'DISPLAYLOCATION' THEN ?2 WHEN 'CATEGORY_TYPE' THEN ?3 ELSE ?5 END "
     "WHERE titleId = ?1 AND key IN ('DISPLAYLOCATION', 'CATEGORY_TYPE', 'HUBAPP_URI')",
@@ -1259,6 +1286,9 @@ static int write_move(sqlite3* db, const char* title, int location, char users[]
     sqlite3_finalize(statement);
     if (failed) return -1;
   }
+  if (set_app_field(db, title, "DISPLAYLOCATION", location, NULL) ||
+      set_app_field(db, title, "CATEGORY_TYPE", category, NULL) || set_app_field(db, title, "HUBAPP_URI", 0, hub))
+    return -1;
   for (int i = 0; i < count; ++i) {
     char sql[160];
     snprintf(sql, sizeof sql, "UPDATE tbl_iconinfo_%s SET dispLocation = ?, hubAppUri = ? WHERE titleId = ?", users[i]);
@@ -1510,6 +1540,12 @@ static int write_system(sqlite3* db, const char* title, const char* concept, int
       run_values(db, "UPDATE tbl_contentinfo SET AppInfoJson = json_set(AppInfoJson, '$.DISPLAYLOCATION', dispLocation) "
                  "WHERE titleId = ?2 AND json_valid(AppInfoJson) AND json_type(AppInfoJson, '$.DISPLAYLOCATION') IS NOT "
                  "NULL AND AppInfoJson ->> '$.DISPLAYLOCATION' IS NOT dispLocation", 0, title, NULL) < 0) return -1;
+  if (has_column(db, "main", "tbl_contentinfo", "AppInfoJson") &&
+      run_values(db, "UPDATE tbl_contentinfo SET AppInfoJson = json_set(AppInfoJson, '$.field_list[' || (SELECT e.key FROM "
+                 "json_each(" SAFE_JSON("AppInfoJson") ", '$.field_list') e WHERE e.value ->> '$.key' = 'DISPLAYLOCATION' "
+                 "LIMIT 1) || '].data', dispLocation) WHERE titleId = ?2 AND json_valid(AppInfoJson) AND EXISTS (SELECT 1 "
+                 "FROM json_each(" SAFE_JSON("AppInfoJson") ", '$.field_list') e WHERE e.value ->> '$.key' = "
+                 "'DISPLAYLOCATION' AND e.value ->> '$.data' IS NOT dispLocation)", 0, title, NULL) < 0) return -1;
   if (*concept && fix_concept_json(db, concept)) return -1;
   // Off the Games row, a tile leaves each profile's MyHome group, which places the system's tiles there; the rest
   // keep their order. lineup_home_<user> keeps its row, every column of it, with idx its place counted from 1, for
@@ -1759,8 +1795,8 @@ static int system_stale(sqlite3* db, char users[][16], int count) {
   int found = 0;
   if (has_column(db, "main", "tbl_contentinfo", "AppInfoJson"))
     found = finds_row(db, "SELECT 1 FROM tbl_contentinfo c JOIN main.lineup_system s ON s.titleId = c.titleId WHERE "
-                      "json_valid(c.AppInfoJson) AND json_type(c.AppInfoJson, '$.DISPLAYLOCATION') IS NOT NULL AND "
-                      "c.AppInfoJson ->> '$.DISPLAYLOCATION' IS NOT c.dispLocation LIMIT 1", NULL);
+                      "json_valid(c.AppInfoJson) AND ifnull(" APP_FIELD("c.AppInfoJson", "DISPLAYLOCATION") ", "
+                      "c.dispLocation) IS NOT c.dispLocation LIMIT 1", NULL);
   if (!found && has_column(db, "main", "tbl_conceptmetadata", "ConceptInfoJson"))
     found = finds_row(db, "SELECT 1 FROM tbl_conceptmetadata x JOIN main.lineup_system s ON s.concept = x.localConceptId "
                       "JOIN json_each(" SAFE_JSON("x.ConceptInfoJson") ", '$.field_list') e WHERE "
@@ -1873,7 +1909,8 @@ static int restore_moved(void) {
   int failed = count < 0 || attach_appinfo(db, message, sizeof message);
   if (!failed) {
     puts_(&sql, "SELECT m.titleId, m.tab FROM lineup_moved m JOIN tbl_contentinfo c ON c.titleId = m.titleId AND "
-          "json_valid(c.AppInfoJson) WHERE c.dispLocation <> m.tab OR c.AppInfoJson ->> '$.DISPLAYLOCATION' IS NOT m.tab "
+          "json_valid(c.AppInfoJson) WHERE c.dispLocation <> m.tab OR ifnull(" APP_FIELD("c.AppInfoJson", "DISPLAYLOCATION")
+          ", m.tab) IS NOT m.tab "
           "OR EXISTS (SELECT 1 FROM info.tbl_appinfo a WHERE a.titleId = m.titleId AND a.key = 'DISPLAYLOCATION' AND "
           "a.val IS NOT m.tab)");
     for (int i = 0; i < count; ++i)
@@ -4345,6 +4382,38 @@ int main(int argc, char** argv) {
     test_system("0000000007");
     db_path = app;
     appinfo_path = info;
+  }
+
+  // AppInfoJson in both shapes: the field list's entries change (and a top-level copy an earlier Lineup added goes),
+  // a flat one gets its keys; APP_FIELD reads either.
+  {
+    sqlite3* j;
+    assert(sqlite3_open(":memory:", &j) == SQLITE_OK);
+    assert(sqlite3_exec(j, "CREATE TABLE tbl_contentinfo (titleId TEXT, AppInfoJson TEXT);"
+                           "INSERT INTO tbl_contentinfo VALUES ('FLAT00001', '{\"DISPLAYLOCATION\":138,\"TITLE\":\"a\"}'),"
+                           "('LIST00001', '{\"field_list\":[{\"data\":138,\"key\":\"DISPLAYLOCATION\",\"size\":8,\"type\":0},"
+                           "{\"data\":\"pshome:gamehub?titleId=LIST00001\",\"key\":\"HUBAPP_URI\",\"size\":32,\"type\":2}],"
+                           "\"mimeType\":0,\"DISPLAYLOCATION\":138}'), ('BAD000001', '{');", NULL, NULL, NULL) == SQLITE_OK);
+    const char* hub = "psmediahub:main?titleId=LIST00001";
+    for (int i = 0; i < 3; ++i) {
+      const char* t = i == 0 ? "FLAT00001" : i == 1 ? "LIST00001" : "BAD000001";
+      assert(!set_app_field(j, t, "DISPLAYLOCATION", 188, NULL) && !set_app_field(j, t, "HUBAPP_URI", 0, hub));
+    }
+    sqlite3_stmt* s;
+    assert(sqlite3_prepare_v2(j, "SELECT titleId, " APP_FIELD("AppInfoJson", "DISPLAYLOCATION") ", "
+                              APP_FIELD("AppInfoJson", "HUBAPP_URI") ", AppInfoJson FROM tbl_contentinfo ORDER BY rowid",
+                              -1, &s, NULL) == SQLITE_OK);
+    for (int i = 0; i < 3; ++i) {
+      assert(sqlite3_step(s) == SQLITE_ROW);
+      const char* json = (const char*)sqlite3_column_text(s, 3);
+      if (i == 2) { assert(!strcmp(json, "{") && sqlite3_column_type(s, 1) == SQLITE_NULL); continue; }
+      assert(sqlite3_column_int(s, 1) == 188 && !strcmp((const char*)sqlite3_column_text(s, 2), hub));
+      if (i == 1)
+        assert(strstr(json, "\"size\":33") && strstr(json, "\"mimeType\":0}") && !strstr(json, "\"HUBAPP_URI\":"));
+      else assert(strstr(json, "\"TITLE\":\"a\""));
+    }
+    sqlite3_finalize(s);
+    sqlite3_close(j);
   }
 
   // Profile pictures: folders named with 8 and 16 hex digits.

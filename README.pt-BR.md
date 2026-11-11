@@ -75,7 +75,7 @@ Você precisa de um PS5 com jailbreak, **kstuff**, um **ELF loader na porta 9021
 
 Prefere pasta? Descompacte `Lineup-<versão>.zip` e envie a pasta `PPSA99077/` para `/data/homebrew/PPSA99077`. Use um ou outro: os dois registram o title ID `PPSA99077`.
 
-Testado no firmware **13.60** com kstuff, elfldr 0.26 e ShadowMountPlus. Os outros firmwares não foram testados.
+Testado num console no firmware **13.60** com kstuff, elfldr 0.26 e ShadowMountPlus. O banco da tela inicial do **11.40** e do **13.00** tem o mesmo formato, e a autoverificação do Lineup (ordem, fixados, mover e ocultar) passa em cópias dele; firmwares anteriores ao 11.00 não foram verificados. O Lineup roda onde o ShadowMountPlus e um ELF loader na porta 9021 rodam.
 
 ## Controles
 
@@ -92,7 +92,7 @@ Testado no firmware **13.60** com kstuff, elfldr 0.26 e ShadowMountPlus. Os outr
 ## Segurança
 
 - A gravação passa só pelo serviço **lineupd**, numa única transação SQLite. A nova ordem reaproveita os índices que a fileira já tem, então nenhum valor passa do que o sistema espera.
-- Antes de salvar, o lineupd copia o banco para `/data/lineup/backups/` (guarda os 5 mais recentes) e roda o `quick_check` do SQLite. Depois da gravação, roda o `integrity_check`.
+- Antes de salvar, o lineupd copia o banco para `/data/lineup/backups/` (guarda os 10 mais recentes, mais os bancos como estavam na primeira vez que o 2.0.0 rodou) e roda o `quick_check` do SQLite. Depois da gravação, roda o `integrity_check`.
 - Se a fileira mudou desde a leitura (você abriu um jogo nesse meio-tempo), a gravação é recusada e a fileira é carregada de novo.
 
 ## Perguntas frequentes
@@ -104,7 +104,7 @@ Testado no firmware **13.60** com kstuff, elfldr 0.26 e ShadowMountPlus. Os outr
 Sim. O Lineup grava onde a tela inicial guarda a fileira, e os apps escondidos continuam escondidos.
 
 **Funciona no meu firmware?**
-Foi testado no 13.60. Se você testar em outra versão, abra uma [issue](https://github.com/bps2414/lineup/issues) contando se funcionou.
+Foi testado num console no 13.60, e as verificações do banco passam em cópias do 11.40 e do 13.00. Em outra versão, [conte se funcionou](https://github.com/bps2414/lineup/issues/new?template=firmware.yml); em firmware anterior ao 11.00, anexe Opções → Mais opções → Salvar relatório de bug, porque o banco pode ser diferente.
 
 **Como volto para a ordem do sistema?**
 Opções → Mais opções → Remover fixos de todos os perfis. Todos os perfis voltam a "o último aberto vai para a frente", e os apps escondidos voltam.
